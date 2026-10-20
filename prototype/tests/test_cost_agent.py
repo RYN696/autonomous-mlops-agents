@@ -223,3 +223,37 @@ def test_unknown_events_are_ignored():
     agent, store, bus, log, cfg = make_agent()
     send(agent, "drift_detected", {"model": "taxi"})
     assert bus.events == [] and log.rows == []
+
+
+from unittest.mock import MagicMock
+from agents.cost.service import CostService
+
+# ---------- service ----------
+def test_cost_service_run_tick_executes_all_tasks():
+    mock_agent = MagicMock()
+    mock_bus = MagicMock()
+
+    service = CostService(agent=mock_agent, bus=mock_bus)
+    service.run_tick()
+
+    # Vérification que les 3 fonctions clés sont bien appelées lors d'un cycle (tick)
+    mock_agent.record_serving_sample.assert_called_once()
+    mock_agent.check_idle.assert_called_once()
+    mock_agent.recommend_server_size.assert_called_once()
+
+
+def test_cost_service_start_and_stop():
+    mock_agent = MagicMock()
+    mock_bus = MagicMock()
+
+    service = CostService(agent=mock_agent, bus=mock_bus, interval_seconds=0.1)
+    
+    # Démarrage de la boucle d'arrière-plan
+    service.start()
+    assert service._running is True
+    assert service._thread is not None and service._thread.is_alive()
+
+    # Arrêt propre
+    service.stop()
+    assert service._running is False
+    assert not service._thread.is_alive()

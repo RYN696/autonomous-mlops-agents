@@ -14,6 +14,7 @@ L'agent ne bloque JAMAIS un job : c'est l'Orchestrateur qui décide
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Protocol
 
@@ -95,7 +96,34 @@ class CostAgent:
         self._record("cost_estimated", model, answer)
 
         if exceeds:
-            over = {**answer, "over_by": round(month_total + estimate - budget, 6)}
+            remaining_budget = max(0.0, budget - month_total)
+            requested_months = months or 1
+            
+            # Coût moyen d'un mois de données
+            cost_per_month_std = estimate / requested_months if requested_months > 0 else estimate
+            cost_per_month_spot = options["spot"]["cost"] / requested_months if requested_months > 0 else options["spot"]["cost"]
+
+            # Nombre maximal de mois payables dans le budget restant
+            max_months_std = math.floor(remaining_budget / cost_per_month_std) if cost_per_month_std > 0 else 0
+            max_months_spot = math.floor(remaining_budget / cost_per_month_spot) if cost_per_month_spot > 0 else 0
+
+            # Détermination de la suggestion
+            if month_total + options["spot"]["cost"] <= budget:
+                suggestion = "Passer sur des instances Spot (-60%)"
+            elif max_months_spot > 0:
+                suggestion = f"Utiliser Spot et réduire la période à {max_months_spot} mois"
+            elif max_months_std > 0:
+                suggestion = f"Réduire la période à {max_months_std} mois"
+            else:
+                suggestion = "Budget mensuel épuisé"
+
+            over = {
+                **answer,
+                "over_by": round(month_total + estimate - budget, 6),
+                "max_affordable_months_standard": max_months_std,
+                "max_affordable_months_spot": max_months_spot,
+                "suggested_action": suggestion,
+            }
             self._publish(EventType.BUDGET_EXCEEDED, model, over)
             self._record("budget_exceeded", model, over)
         return answer
