@@ -43,17 +43,8 @@ COLUMN_DRIFT_THRESHOLD = float(os.getenv("COLUMN_DRIFT_THRESHOLD", "0.1"))
 MONITORED_ENDPOINT = os.getenv("MONITORED_ENDPOINT", "/predict")  # route dont on surveille le SLO
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "3"))  # au-delà, l'API est jugée injoignable
 MIN_REQUESTS = int(os.getenv("MIN_REQUESTS", "10"))  # en dessous, le taux d'erreurs n'est pas significatif
-HIGH_ERROR_RATE = float(os.getenv("HIGH_ERROR_RATE", "0.20"))
-CRITICAL_ERROR_RATE = float(os.getenv("CRITICAL_ERROR_RATE", "0.50"))  # au-delà : critique d'office
-HIGH_LATENCY_SECONDS = float(os.getenv("HIGH_LATENCY_SECONDS", "3.0"))
 SLO_TARGET = float(os.getenv("SLO_TARGET", "0.99"))  # 99 % de requêtes réussies
 SLO_WINDOW_MINUTES = float(os.getenv("SLO_WINDOW_MINUTES", "60"))
-SEVERITY_MEDIUM_SCORE = int(os.getenv("SEVERITY_MEDIUM_SCORE", "4"))
-SEVERITY_HIGH_SCORE = int(os.getenv("SEVERITY_HIGH_SCORE", "7"))
-CRASH_LOOP_RESTARTS = int(os.getenv("CRASH_LOOP_RESTARTS", "3"))  # redémarrages en 10 min = boucle de crash
-RESOURCE_MEMORY_PERCENT = float(os.getenv("RESOURCE_MEMORY_PERCENT", "90"))
-RESOURCE_CPU_PERCENT = float(os.getenv("RESOURCE_CPU_PERCENT", "95"))
-BAD_MODEL_WINDOW_MINUTES = float(os.getenv("BAD_MODEL_WINDOW_MINUTES", "30"))  # modèle promu récemment = suspect
 API_CONTAINER_NAME = os.getenv("API_CONTAINER_NAME", "mlops-api")
 API_SERVICE_NAME = os.getenv("API_SERVICE_NAME", "api")  # nom du service dans docker-compose.yml
 REDIS_CONTAINER_NAME = os.getenv("REDIS_CONTAINER_NAME", "mlops-redis")
@@ -61,18 +52,17 @@ MLFLOW_CONTAINER_NAME = os.getenv("MLFLOW_CONTAINER_NAME", "mlops-mlflow")
 # Seuls conteneurs que l'agent a le droit de toucher (jamais Postgres)
 ALLOWED_CONTAINERS = (API_CONTAINER_NAME, REDIS_CONTAINER_NAME, MLFLOW_CONTAINER_NAME)
 ACTION_HTTP_TIMEOUT_SECONDS = float(os.getenv("ACTION_HTTP_TIMEOUT_SECONDS", "30"))  # /reload peut prendre plusieurs secondes
+# Le client MLflow réessaie par défaut jusqu'à 7 fois (backoff x2, jusqu'à 120 s de délai) : pendant
+# une panne MLflow, un simple snapshot avant action bloquerait l'agent plusieurs minutes. Ici, un
+# échec rapide suffit (le code traite déjà l'absence de MLflow comme un fait, pas une erreur fatale).
+RELIABILITY_MLFLOW_HTTP_MAX_RETRIES = int(os.getenv("RELIABILITY_MLFLOW_HTTP_MAX_RETRIES", "1"))
+RELIABILITY_MLFLOW_HTTP_TIMEOUT_SECONDS = float(os.getenv("RELIABILITY_MLFLOW_HTTP_TIMEOUT_SECONDS", "3"))
 # Modèle de secours du mode dégradé : durée = base + minutes_par_mile x distance
 FALLBACK_BASE_MINUTES = float(os.getenv("FALLBACK_BASE_MINUTES", "4.0"))
 FALLBACK_MINUTES_PER_MILE = float(os.getenv("FALLBACK_MINUTES_PER_MILE", "3.5"))
 # Boucle de l'agent
 RELIABILITY_POLL_SECONDS = float(os.getenv("RELIABILITY_POLL_SECONDS", "15"))
 PROBE_COUNT = int(os.getenv("PROBE_COUNT", "10"))  # sondes par cycle (>= MIN_REQUESTS : mesure fiable sans trafic)
-CONSECUTIVE_BREACHES = int(os.getenv("CONSECUTIVE_BREACHES", "2"))  # dépassements de suite avant d'ouvrir un incident
-CONSECUTIVE_OK_TO_RESOLVE = int(os.getenv("CONSECUTIVE_OK_TO_RESOLVE", "2"))  # cycles OK de suite avant de clore
-VERIFY_WAIT_SECONDS = float(os.getenv("VERIFY_WAIT_SECONDS", "20"))  # délai laissé à une action avant de la juger
-MAX_RESTARTS_PER_HOUR = int(os.getenv("MAX_RESTARTS_PER_HOUR", "3"))  # anti-boucle
-ESCALATION_REMINDER_MINUTES = float(os.getenv("ESCALATION_REMINDER_MINUTES", "15"))
-VERIFY_MAX_WAIT_SECONDS = float(os.getenv("VERIFY_MAX_WAIT_SECONDS", "60"))  # attente max qu'une API redémarrée réponde
 PROBE_MAX_CONSECUTIVE_FAILURES = int(os.getenv("PROBE_MAX_CONSECUTIVE_FAILURES", "2"))  # au-delà, API jugée HS : on arrête les sondes
 FAULT_INJECTION = os.getenv("FAULT_INJECTION", "0") == "1"  # route /fault de démo, désactivée par défaut
 
@@ -84,3 +74,16 @@ DEFAULT_CPU_SECONDS_PER_MONTH_OF_DATA = float(
 COST_IDLE_MINUTES = float(os.getenv("COST_IDLE_MINUTES", "30.0"))
 COST_SIZE_HEADROOM = float(os.getenv("COST_SIZE_HEADROOM", "0.3"))
 COST_HOURS_PER_MONTH = float(os.getenv("COST_HOURS_PER_MONTH", "730.0"))
+
+
+# --- LLM (Ollama, 100 % local) : ils prennent toutes les décisions de l'agent Fiabilité ---
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+LLM_AGENT_MODEL = os.getenv("LLM_AGENT_MODEL", "qwen2.5:3b")    # décide (appelé à chaque cycle)
+LLM_JUDGE_MODEL = os.getenv("LLM_JUDGE_MODEL", "llama3.2:3b")   # juge : autre famille de modèle
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))  # 1er chargement d'un modèle : ~30-45 s
+LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "4096"))
+LLM_KEEP_ALIVE = os.getenv("LLM_KEEP_ALIVE", "30m")             # garder le modèle en mémoire GPU
+LLM_MAX_PROPOSALS = int(os.getenv("LLM_MAX_PROPOSALS", "2"))    # propositions d'action max par cycle (si refus du juge)
+LLM_THINK = os.getenv("LLM_THINK", "off")    # "off" : coupe le mode réflexion (qwen3...) trop lent ; "on" ; "auto" : défaut du modèle
+LLM_TREND_CYCLES = int(os.getenv("LLM_TREND_CYCLES", "8"))      # mesures passées montrées au LLM
+JUDGE_MIN_SCORE = int(os.getenv("JUDGE_MIN_SCORE", "6"))        # note minimale (sur 10) pour approuver

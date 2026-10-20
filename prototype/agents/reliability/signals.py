@@ -5,14 +5,27 @@ modèle servi. Chaque sonde est isolée : une sonde en échec donne un signal
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from collections import deque
 from typing import Callable
 
 import requests
 
-from agents.reliability.diagnosis import Signals
 from agents.reliability.metrics import WindowStats
 from common import config
+
+
+@dataclass(frozen=True)
+class Signals:
+    """Signaux externes à l'API (Docker, MLflow, services), transmis tels quels au LLM."""
+    container_status: str = "running"         # running | exited | dead | restarting | unknown
+    restarts_recent: int = 0                  # redémarrages du conteneur dans les 10 dernières minutes
+    memory_percent: float | None = None
+    cpu_percent: float | None = None
+    mlflow_ok: bool = True
+    redis_ok: bool = True
+    postgres_ok: bool = True
+    model_age_seconds: float | None = None    # temps depuis le dernier changement de version observé
 
 CRASH_LOOP_WINDOW_SECONDS = 600  # fenêtre de comptage des redémarrages (10 min)
 

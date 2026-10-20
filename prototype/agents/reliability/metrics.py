@@ -6,6 +6,7 @@ le trafic, le taux d'erreurs et la latence p95 de la fenêtre (WindowStats)."""
 from __future__ import annotations
 
 import math
+from collections import deque
 import time
 from dataclasses import dataclass, field
 
@@ -137,3 +138,30 @@ def compute_window(prev: Snapshot, curr: Snapshot) -> WindowStats:
         health_ok=curr.health_ok,
         counter_reset=reset,
     )
+
+
+class ErrorBudget:
+    """Budget d'erreurs du SLO sur une fenêtre glissante.
+
+    Avec un SLO à 99 %, on a droit à 1 % d'échecs. consumed() renvoie la part
+    de ce droit déjà utilisée (0.5 = 50 % du budget brûlé)."""
+
+    def __init__(self, target: float | None = None, window_seconds: float | None = None):
+        self.target = config.SLO_TARGET if target is None else target
+        self.window_seconds = config.SLO_WINDOW_MINUTES * 60 if window_seconds is None else window_seconds
+        self._history: deque[tuple[float, float, float]] = deque()  # (instant, requêtes, erreurs)
+
+    def add(self, window: WindowStats, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        if window.reachable:
+            self._history.append((now, window.requests, window.errors))
+        else:  # API injoignable : nombre de requêtes inconnu, on compte un lot entièrement en échec
+            self._history.append((now, config.MIN_REQUESTS, config.MIN_REQUESTS))
+        while self._history and now - self._history[0][0] > self.window_seconds:
+            self._history.popleft()
+
+    def consumed(self) -> float:
+        requests = sum(r for _, r, _ in self._history)
+        errors = sum(e for _, _, e in self._history)
+        allowed = max((1 - self.target) * requests, 1.0)  # au moins 1 erreur tolérée
+        return errors / allowed

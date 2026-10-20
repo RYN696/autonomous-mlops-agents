@@ -147,11 +147,6 @@ def test_rollback_without_any_safe_version_fails_cleanly():
     assert mlflow.aliases["production"] == "4"
 
 
-def test_escalate_is_not_a_system_action():
-    actions, *_ = make()
-    assert actions.execute(Action.ESCALATE).success is False
-
-
 def test_snapshot_then_restore_undoes_changes():
     actions, docker, mlflow, http, _ = make()
     snap = actions.take_snapshot()

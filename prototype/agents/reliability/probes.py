@@ -25,12 +25,6 @@ class ProbeResult:
     def failure_rate(self) -> float:
         return self.failed / self.sent if self.sent else 0.0
 
-    @property
-    def ok(self) -> bool:
-        if self.sent == 0:  # sondes désactivées : pas d'information, on ne conclut rien
-            return True
-        slow = self.p95_latency is not None and self.p95_latency > config.MAX_LATENCY_SECONDS
-        return self.failure_rate <= config.MAX_ERROR_RATE and not slow
 
 
 def percentile(values: list[float], q: float) -> float | None:
