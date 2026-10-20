@@ -56,7 +56,8 @@ ACTION_HTTP_TIMEOUT_SECONDS = float(os.getenv("ACTION_HTTP_TIMEOUT_SECONDS", "30
 # une panne MLflow, un simple snapshot avant action bloquerait l'agent plusieurs minutes. Ici, un
 # échec rapide suffit (le code traite déjà l'absence de MLflow comme un fait, pas une erreur fatale).
 RELIABILITY_MLFLOW_HTTP_MAX_RETRIES = int(os.getenv("RELIABILITY_MLFLOW_HTTP_MAX_RETRIES", "1"))
-RELIABILITY_MLFLOW_HTTP_TIMEOUT_SECONDS = float(os.getenv("RELIABILITY_MLFLOW_HTTP_TIMEOUT_SECONDS", "3"))
+# Entier : MLflow fait int(valeur) sur cette variable, "3.0" lèverait une ValueError.
+RELIABILITY_MLFLOW_HTTP_TIMEOUT_SECONDS = int(os.getenv("RELIABILITY_MLFLOW_HTTP_TIMEOUT_SECONDS", "3"))
 # Modèle de secours du mode dégradé : durée = base + minutes_par_mile x distance
 FALLBACK_BASE_MINUTES = float(os.getenv("FALLBACK_BASE_MINUTES", "4.0"))
 FALLBACK_MINUTES_PER_MILE = float(os.getenv("FALLBACK_MINUTES_PER_MILE", "3.5"))
