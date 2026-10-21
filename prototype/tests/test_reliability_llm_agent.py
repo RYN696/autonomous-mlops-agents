@@ -124,7 +124,7 @@ class Harness:
             llm=self.llm, judge=Judge(self.judge_llm, min_score=6), bus=self.bus, action_log=self.log,
             actions=self.actions, collector=self.collector, fetch=self.api.snapshot,
             probe=lambda: ProbeResult(10, 0, 0.02), metrics_store=self.store,
-            autonomy={"restart_api": "auto", "rollback_model": "auto"})
+            autonomy={"restart_api": "auto", "rollback_model": "auto", "degraded_mode": "auto"})
         self.agent.run_once(now=0)          # 1re lecture : référence, pas d'appel au LLM
 
     def cycle(self, ok=20, errors=0):
@@ -266,8 +266,8 @@ def test_not_repaired_verdict_leads_to_a_new_action_question_showing_what_failed
 
 def test_worse_verdict_restores_the_snapshot_then_asks_for_another_action():
     h = Harness([incident(), choose("restart_api"), verdict("aggrave"), choose("attendre")], [APPROVE])
-    h.cycle(ok=0, errors=20)
-    h.cycle(ok=0, errors=20)
+    h.cycle(ok=10, errors=10)                           # 50 % d'erreurs avant l'action
+    h.cycle(ok=0, errors=20)                            # 100 % après : vraiment pire
     assert h.actions.restored == 1
     assert h.phases()[-2:] == ["verification", "action"]
 
@@ -324,22 +324,23 @@ def test_invalid_choice_is_reported_to_the_llm_not_crashing_the_agent():
 
 def test_the_judge_receives_signals_and_autonomy_policy():
     h = Harness([incident(), choose("restart_api")], [APPROVE])
-    h.collector.signals = Signals(mlflow_ok=False)
+    h.collector.signals = Signals(redis_ok=False)       # (MLflow en panne : règle en code, pas de juge)
     h.cycle(ok=0, errors=20)
     content = h.judge_llm.received[0][1]["content"]
     judge_user = json.loads(content[content.index("{"):])  # un rappel des signaux précède le JSON
-    assert judge_user["contexte"]["signaux"]["mlflow_ok"] is False
-    assert "signaux.mlflow_ok = False" in content           # rappelés une 2e fois, en tête du message
+    assert judge_user["contexte"]["signaux"]["redis_ok"] is False
+    assert "signaux.redis_ok = False" in content           # rappelés une 2e fois, en tête du message
     assert judge_user["contexte"]["politique_autonomie"]["restart_api"] == "auto"
 
 
 def test_llm_notifies_a_human_then_checks_whether_the_service_comes_back():
     h = Harness([incident(cause="postgres_indisponible"),
                  choose("prevenir_humain", message="Postgres en panne", intervention_requise=True),
-                 verdict("repare", resume="Postgres revenu")], [POSTMORTEM])
+                 verdict("attendre"), verdict("repare", resume="Postgres revenu")], [POSTMORTEM])
     h.cycle(ok=0, errors=20)
     approval = [e for e in h.bus.events if e.type == EventType.APPROVAL_REQUESTED][0].payload
     assert approval["reason"] == "Postgres en panne" and approval["intervention_requise"] is True
+    h.cycle(ok=20)
     h.cycle(ok=20)
     assert h.phases()[-1] == "verification" and h.agent.incident is None
 
@@ -365,8 +366,10 @@ def test_without_llm_the_agent_takes_no_decision_and_warns_a_human_once():
 
 
 def test_recently_closed_incident_is_shown_to_avoid_reopening():
-    h = Harness([incident(), choose("rollback_model"), verdict("repare", resume="ok")], [APPROVE, POSTMORTEM])
+    h = Harness([incident(), choose("rollback_model"), verdict("attendre"), verdict("repare", resume="ok")],
+                [APPROVE, POSTMORTEM])
     h.cycle(ok=0, errors=20)
+    h.cycle(ok=20)
     h.cycle(ok=20)
     h.cycle(ok=20)
     closed = h.contexts("detection")[-1]["dernier_incident_clos"]
@@ -398,3 +401,156 @@ def test_each_phase_sends_ollama_its_own_structured_output_schema():
     assert DETECTION_SCHEMA["additionalProperties"] is False
     assert ACTION_SCHEMA["additionalProperties"] is False
     assert VERIFICATION_SCHEMA["additionalProperties"] is False
+
+
+# ------------------------------------------------------------------ règles déterministes (guards.py)
+def test_no_verification_while_the_api_is_still_restarting():
+    h = Harness([incident(cause="api_arretee"), choose("restart_api"), verdict("attendre")], [APPROVE])
+    h.cycle(ok=0, errors=20)
+    h.api.reachable = False                             # le conteneur redémarre encore
+    h.cycle()
+    assert h.phases() == ["detection", "action"]        # pas de verdict "aggrave" sur une API en démarrage
+    assert h.agent.incident.since_last_action == []
+    h.api.reachable = True
+    h.cycle(ok=20)
+    assert h.phases()[-1] == "verification"
+
+
+def test_restart_grace_has_a_limit():
+    h = Harness([incident(cause="api_arretee"), choose("restart_api"), verdict("pas_repare"), choose("attendre")],
+                [APPROVE])
+    h.cycle(ok=0, errors=20)
+    h.api.reachable = False
+    for _ in range(7):                                  # 105 s > délai de grâce de 90 s
+        h.cycle()
+    assert "verification" in h.phases()
+
+
+def test_worse_verdict_is_ignored_when_measures_are_not_worse():
+    h = Harness([incident(), choose("restart_api"), verdict("aggrave"), choose("attendre")], [APPROVE])
+    h.cycle(ok=0, errors=20)
+    h.cycle(ok=0, errors=20)                            # 100 % -> 100 % : pas réparé, mais pas pire
+    assert h.actions.restored == 0
+    assert any(r["action"] == "verdict_corrected" for r in h.log.records)
+
+
+def test_repaired_verdict_needs_two_healthy_measures():
+    h = Harness([incident(), choose("degraded_mode"), verdict("repare", resume="trop tôt")], [APPROVE])
+    h.cycle(ok=0, errors=20)
+    h.cycle(ok=20)
+    assert h.agent.incident is not None                 # une seule mesure saine : on attend
+
+
+def test_incident_without_any_measured_anomaly_is_not_opened():
+    # vu en direct : "latence p95 0,015 s, bien au-dessus de l'objectif de 1 s" -> incident surcharge
+    h = Harness([incident(cause="surcharge", gravite="moyenne")])
+    h.cycle(ok=20)
+    assert h.agent.incident is None and h.bus.events == []
+    assert any(r["action"] == "incident_rejected_by_rule" for r in h.log.records)
+    assert h.contexts("detection")[-1]["anomalies_mesurees"] == []
+
+
+def test_external_promotion_followed_by_errors_forces_cause_and_rollback_without_the_judge():
+    # vu en direct : le LLM a dit "surcharge" et le juge a refusé le rollback
+    h = Harness([NO_INCIDENT, incident(cause="surcharge", gravite="moyenne")], [REJECT])
+    h.cycle()
+    h.api.version = 5                                   # promotion externe d'une version cassée
+    h.cycle(ok=0, errors=20)
+    inc = h.agent.incident
+    assert inc.cause == "mauvais_modele" and inc.component == "modele"
+    assert h.actions.executed == [Action.ROLLBACK_MODEL]
+    assert inc.actions[0]["by"] == "regle:mauvais_modele"
+    assert h.judge_llm.received == []                   # le juge LLM n'a pas été consulté
+    assert "action" not in h.phases()                   # ni le LLM agent pour le choix d'action
+
+
+def test_bad_model_rule_respects_the_autonomy_policy():
+    h = Harness([NO_INCIDENT, incident()])
+    h.agent.autonomy = {"rollback_model": "approval"}
+    h.cycle()
+    h.api.version = 5
+    h.cycle(ok=0, errors=20)
+    assert h.actions.executed == []
+    assert EventType.APPROVAL_REQUESTED in h.bus.types()
+
+
+def test_bad_model_rule_does_not_apply_when_mlflow_is_down():
+    h = Harness([NO_INCIDENT, incident(cause="mlflow_indisponible"), choose("degraded_mode")], [APPROVE])
+    h.cycle()
+    h.collector.signals = Signals(mlflow_ok=False)
+    h.api.version = 5
+    h.cycle(ok=0, errors=20)
+    assert h.agent.incident.cause == "mlflow_indisponible"
+    assert Action.ROLLBACK_MODEL not in h.actions.executed
+
+
+def test_bad_model_rule_needs_a_healthy_service_before_the_promotion():
+    h = Harness([NO_INCIDENT, incident(cause="inconnue"), choose("attendre"), verdict("attendre")])
+    h.cycle(ok=0, errors=20)                            # déjà en panne avant la nouvelle version
+    h.api.version = 5
+    h.cycle(ok=0, errors=20)
+    assert h.agent.incident.cause == "inconnue" and h.actions.executed == []
+
+
+def test_measures_after_an_action_start_right_after_it():
+    # vu en direct : la mesure suivant le rollback mêlait ~20 s d'erreurs d'avant l'action
+    h = Harness([incident(), choose("rollback_model"), verdict("attendre")], [APPROVE])
+    execute = h.actions.execute
+
+    def slow_llm_then_execute(action):             # 20 erreurs pendant que le LLM réfléchissait
+        h.api.requests += 20
+        h.api.errors += 20
+        return execute(action)
+
+    h.actions.execute = slow_llm_then_execute
+    h.cycle(ok=0, errors=20)                            # incident + rollback
+    h.cycle(ok=20)                                      # après l'action : 0 erreur
+    assert h.contexts("verification")[-1]["mesures_depuis_la_derniere_action"][0]["erreurs_pct"] == 0.0
+
+
+def test_contradicted_cause_is_replaced():
+    h = Harness([incident(cause="api_arretee", gravite="moyenne"), choose("attendre")])
+    h.cycle(ok=14, errors=6)                            # l'API répond, le conteneur tourne
+    assert h.agent.incident.cause == "inconnue"
+
+
+def test_mlflow_down_protects_users_and_warns_a_human_without_touching_the_api():
+    # vu en direct : cause "mauvais_modele", rollback proposé, aucun mode dégradé
+    h = Harness([incident(cause="mauvais_modele")], [])
+    h.collector.signals = Signals(mlflow_ok=False)
+    h.cycle(ok=0, errors=20)
+    assert h.agent.incident.cause == "mlflow_indisponible"
+    assert h.actions.executed == [Action.DEGRADED_MODE]
+    assert h.agent.incident.human_notified
+    assert h.judge_llm.received == [] and "action" not in h.phases()
+
+
+def test_forbidden_action_is_refused_by_code_before_the_judge():
+    h = Harness([incident(cause="inconnue"), choose("restart_api"), choose("attendre")], [APPROVE])
+    h.collector.signals = Signals(restarts_recent=3)
+    h.cycle(ok=0, errors=20)
+    assert h.actions.executed == []
+    assert h.judge_llm.received == []                   # refus par la règle, juge non consulté
+    assert "boucle" in h.agent.incident.rejections[0]["critique_du_juge"]
+
+
+def test_mlflow_down_degraded_mode_once_users_get_errors():
+    # vu en direct : pas d'erreur à la détection, puis 100 % : le mode dégradé doit suivre
+    h = Harness([incident(cause="mlflow_indisponible"), verdict("aggrave")])
+    h.collector.signals = Signals(mlflow_ok=False)
+    h.cycle(ok=20)                                      # MLflow en panne, l'API sert encore
+    assert h.actions.executed == [] and h.agent.incident.human_notified
+    h.cycle(ok=0, errors=20)
+    assert h.actions.executed == [Action.DEGRADED_MODE]
+
+
+def test_two_healthy_measures_close_the_incident_whatever_the_llm_says():
+    # vu en direct : mesures saines, mais le LLM relisait les anciennes à 100 % et redémarrait l'API
+    h = Harness([incident(), choose("degraded_mode"), verdict("attendre"), verdict("aggrave")],
+                [APPROVE, POSTMORTEM])
+    h.cycle(ok=0, errors=20)
+    h.cycle(ok=20)
+    h.cycle(ok=20)
+    assert h.agent.incident is None and h.actions.executed == [Action.DEGRADED_MODE]
+    resolved = [e for e in h.bus.events if e.type == EventType.INCIDENT_RESOLVED][0].payload
+    assert "2 mesures" in resolved["resume"]

@@ -28,7 +28,7 @@ def _actions_text() -> str:
 
 ROLE = f"""Tu es l'agent Fiabilité d'une plateforme MLOps. Tu surveilles une API Flask qui sert un modèle
 de prédiction (durée des trajets de taxi) chargé depuis MLflow. Mesures toutes les {config.RELIABILITY_POLL_SECONDS:.0f} s.
-Objectifs : au moins {config.SLO_TARGET:.0%} de requêtes réussies, latence p95 sous 1 s.
+Objectifs : au moins {config.SLO_TARGET:.0%} de requêtes réussies, latence p95 sous {config.MAX_LATENCY_SECONDS:g} s.
 Les "sondes" testent le vrai modèle, même en mode dégradé : si elles échouent, le modèle n'est pas réparé.
 Réponds UNIQUEMENT avec l'objet JSON demandé."""
 
@@ -37,6 +37,7 @@ DETECTION_PROMPT = f"""{ROLE}
 TA SEULE QUESTION : y a-t-il un incident en ce moment ?
 
 Pour décider :
+- "anomalies_mesurees" liste ce que le code a mesuré hors objectif. Liste vide : PAS d'incident.
 - Le budget d'erreurs tolère seulement {100 - config.SLO_TARGET * 100:.0f} % d'échecs. "erreurs_pct" ou
   "sondes_echec_pct" nettement au-dessus de ça est un incident, MÊME si ce n'est pas 100 %, MÊME si
   "tendance" montre que ce niveau est stable depuis plusieurs mesures (stable ne veut pas dire sain :

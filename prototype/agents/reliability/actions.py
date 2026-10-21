@@ -120,10 +120,14 @@ class ReliabilityActions:
         def _restore() -> str:
             steps = []
             if snap.production_version and self.production_version() != snap.production_version:
-                self.mlflow.set_registered_model_alias(config.MODEL_NAME, config.PRODUCTION_ALIAS,
-                                                       snap.production_version)
-                self._reload_model()
-                steps.append(f"alias production remis sur la version {snap.production_version}")
+                if self._rolled_back(snap.production_version):
+                    # vu en direct : annuler un rollback remettait en production le modèle cassé
+                    steps.append(f"version {snap.production_version} marquée rolled_back : non restaurée")
+                else:
+                    self.mlflow.set_registered_model_alias(config.MODEL_NAME, config.PRODUCTION_ALIAS,
+                                                           snap.production_version)
+                    self._reload_model()
+                    steps.append(f"alias production remis sur la version {snap.production_version}")
             for name, was_running in snap.containers_running.items():
                 container = self.docker.containers.get(name)
                 if was_running and container.status != "running":
@@ -175,6 +179,10 @@ class ReliabilityActions:
         except Exception:
             return None
         return str(previous.version) if usable(previous) else None
+
+    def _rolled_back(self, version: str) -> bool:
+        versions = self.mlflow.search_model_versions(f"name='{config.MODEL_NAME}'")
+        return any(str(v.version) == str(version) and v.tags.get("rolled_back") == "true" for v in versions)
 
     def _rollback_model(self) -> str:
         current = self.production_version()

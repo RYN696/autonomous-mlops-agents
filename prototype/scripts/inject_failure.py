@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import sys
 import time
 
 import requests
@@ -142,6 +143,9 @@ def traffic(per_second: float) -> None:
 
 
 def main() -> None:
+    # MLflow affiche des emojis (🏃, 🧪) : la console Windows (cp1252) lèverait UnicodeEncodeError
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Banc de pannes pour l'agent Fiabilité.")
     parser.add_argument("mode", choices=["traffic", "crash", "errors", "latency", "bad-model",
                                          "mlflow-down", "recover"])

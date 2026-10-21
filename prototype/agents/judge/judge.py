@@ -3,8 +3,9 @@
   - review()   : AVANT une action, décider si elle peut être exécutée (bloquant) ;
   - evaluate() : APRÈS un incident, noter la qualité de la résolution.
 
-Les règles de sécurité sont écrites dans la grille et appliquées par le LLM juge,
-pas par du code. Le juge est un modèle d'une autre famille que celui qu'il juge,
+Les règles de sécurité sont écrites dans la grille et appliquées par le LLM juge ;
+celles qu'un agent sait vérifier seul sur ses mesures sont aussi appliquées en code
+avant le juge (ex. agents/reliability/guards.py). Le juge est un modèle d'une autre famille que celui qu'il juge,
 pour ne pas valider ses propres biais. Une réponse invalide ou absente vaut un rejet."""
 from __future__ import annotations
 

@@ -66,6 +66,12 @@ RELIABILITY_POLL_SECONDS = float(os.getenv("RELIABILITY_POLL_SECONDS", "15"))
 PROBE_COUNT = int(os.getenv("PROBE_COUNT", "10"))  # sondes par cycle (>= MIN_REQUESTS : mesure fiable sans trafic)
 PROBE_MAX_CONSECUTIVE_FAILURES = int(os.getenv("PROBE_MAX_CONSECUTIVE_FAILURES", "2"))  # au-delà, API jugée HS : on arrête les sondes
 FAULT_INJECTION = os.getenv("FAULT_INJECTION", "0") == "1"  # route /fault de démo, désactivée par défaut
+# Règles déterministes autour du LLM (agents/reliability/guards.py)
+# Après un redémarrage, les mesures ne comptent qu'une fois l'API revenue (ou passé ce délai)
+RELIABILITY_RESTART_GRACE_SECONDS = float(os.getenv("RELIABILITY_RESTART_GRACE_SECONDS", "90"))
+RELIABILITY_WORSE_MARGIN_PCT = float(os.getenv("RELIABILITY_WORSE_MARGIN_PCT", "5"))  # "aggravé" = + de 5 points
+RELIABILITY_SATURATION_PCT = float(os.getenv("RELIABILITY_SATURATION_PCT", "90"))  # mémoire / CPU saturés
+RELIABILITY_BAD_MODEL_WINDOW_SECONDS = float(os.getenv("RELIABILITY_BAD_MODEL_WINDOW_SECONDS", "1800"))
 
 COST_PER_CPU_SECOND = float(os.getenv("COST_PER_CPU_SECOND", "0.0005"))
 COST_SPOT_DISCOUNT = float(os.getenv("COST_SPOT_DISCOUNT", "0.6"))
@@ -77,7 +83,7 @@ COST_SIZE_HEADROOM = float(os.getenv("COST_SIZE_HEADROOM", "0.3"))
 COST_HOURS_PER_MONTH = float(os.getenv("COST_HOURS_PER_MONTH", "730.0"))
 
 
-# --- LLM (Ollama, 100 % local) : ils prennent toutes les décisions de l'agent Fiabilité ---
+# --- LLM (Ollama, 100 % local) : ils prennent les décisions de l'agent Fiabilité (encadrées par guards.py) ---
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 LLM_AGENT_MODEL = os.getenv("LLM_AGENT_MODEL", "qwen2.5:3b")    # décide (appelé à chaque cycle)
 LLM_JUDGE_MODEL = os.getenv("LLM_JUDGE_MODEL", "llama3.2:3b")   # juge : autre famille de modèle

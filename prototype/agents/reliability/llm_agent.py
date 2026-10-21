@@ -1,4 +1,4 @@
-"""Agent Fiabilité piloté par LLM : toutes les décisions sont prises par des LLM.
+"""Agent Fiabilité piloté par LLM, encadré par des règles déterministes (guards.py).
 
 À chaque cycle :
   1. le code MESURE (sondes, /metrics, signaux Docker/MLflow/Redis/Postgres) ;
@@ -7,9 +7,11 @@
   3. chaque action passe par le LLM juge, qui applique les règles de sécurité de
      sa grille ; un snapshot est pris avant l'action pour pouvoir l'annuler.
 
-Le code n'est que de la plomberie : capteurs, exécution des actions, traces. Il ne
-décide de rien. Si le LLM est indisponible, l'agent ne décide rien non plus : il
-prévient un humain et réessaie au cycle suivant."""
+Le code fait la plomberie (capteurs, exécution des actions, traces) et applique les
+règles déterministes de guards.py : il écarte une décision du LLM contredite par les
+mesures, et décide lui-même du rollback quand une promotion externe a cassé le service.
+Si le LLM est indisponible, l'agent ne décide rien : il prévient un humain et
+réessaie au cycle suivant."""
 from __future__ import annotations
 
 import json
@@ -20,6 +22,8 @@ import unicodedata
 from collections import deque
 from dataclasses import asdict, dataclass, field
 
+from agents.reliability import guards
+from agents.judge.judge import Verdict
 from agents.reliability.actions import ReliabilityActions
 from agents.reliability.catalog import CATALOG, Action
 from agents.reliability.metrics import ErrorBudget, Snapshot, WindowStats, compute_window, fetch_snapshot
@@ -63,6 +67,7 @@ class IncidentState:
     since_last_action: list = field(default_factory=list)   # mesures prises APRÈS la dernière action
     before_last_action: dict | None = None                  # mesures juste avant la dernière action
     rejections: list = field(default_factory=list)           # refus du juge (montrés au LLM)
+    api_restart_deadline: float | None = None                # API en cours de redémarrage jusqu'à...
 
     def note(self, now: float, event: str, **details) -> None:
         self.timeline.append({"t": round(now - self.opened_at, 1), "event": event, **details})
@@ -143,8 +148,23 @@ class LLMReliabilityAgent:
         self.trend.append(self._measures())
         inc = self.incident
         if inc and inc.last_action_at is not None and self.now > inc.last_action_at:
-            m = self.trend[-1]
-            inc.since_last_action.append(self._short(m))
+            if inc.api_restart_deadline is not None:
+                back = self.window.reachable and self.window.model_loaded and self.probes.failure_rate < 1.0
+                if not back and self.now < inc.api_restart_deadline:
+                    return               # API encore en train de redémarrer : rien à vérifier
+                inc.api_restart_deadline = None
+            inc.since_last_action.append(self._short(self.trend[-1]))
+
+    def _rebase(self) -> None:
+        """Nouvelle base de comparaison juste après une action : sinon la fenêtre suivante
+        commence au début du cycle, ~20 s AVANT l'action (temps de réponse du LLM), et mêle
+        les erreurs d'avant à celles d'après (vu en direct : rollback réussi jugé "aggravé")."""
+        try:
+            snap = self.fetch()
+        except Exception:
+            return
+        if snap.reachable:
+            self.prev = snap
 
     @staticmethod
     def _short(m: dict) -> dict:
@@ -157,7 +177,10 @@ class LLMReliabilityAgent:
             return
         if self.version_seen is not None and v != self.version_seen:
             origin = "rollback_par_l_agent" if self.agent_changed_version else "externe (nouvelle promotion)"
-            self.version_change = {"de": self.version_seen, "vers": v, "at": self.now, "origine": origin}
+            # trend[-1] = mesures du cycle précédent, avant la nouvelle version
+            healthy_before = bool(self.trend) and guards.healthy(self.trend[-1])
+            self.version_change = {"de": self.version_seen, "vers": v, "at": self.now, "origine": origin,
+                                   "sain_avant": healthy_before}
             self.agent_changed_version = False
         self.version_seen = v
 
@@ -217,8 +240,8 @@ class LLMReliabilityAgent:
             verdict = self._phase_verification()
             if verdict == "aggrave" and inc.snapshot is not None:
                 self.tool_restaurer_snapshot(justification="le LLM juge que l'action a aggravé la situation")
-            elif verdict != "pas_repare":          # repare (déjà clos), attendre, ou LLM indisponible
-                return
+            elif verdict not in ("pas_repare", "aggrave"):   # repare (déjà clos), attendre, ou LLM indisponible
+                return                     # "aggrave" sans snapshot (humain prévenu) : on agit quand même
         self._phase_action()
 
     def _ask(self, phase: str, system: str, context: dict, history: list | None = None,
@@ -255,8 +278,12 @@ class LLMReliabilityAgent:
             "budget_erreurs_consomme_pct": round(self.budget.consumed() * 100, 1),
             "dernier_changement_de_version_du_modele": self._version_change_view(),
             "signaux": asdict(self.signals) if self.signals else None,
+            "anomalies_mesurees": guards.anomalies(trend[-1], self.signals),   # calculées par le code
             "dernier_incident_clos": self._last_closed_view(),
         }
+
+    def _bad_model_rule(self) -> str | None:
+        return guards.bad_model(self.version_change, self.trend[-1], self.signals, self.now)
 
     def _phase_detection(self) -> bool:
         context = self._detection_context()
@@ -268,7 +295,19 @@ class LLMReliabilityAgent:
             answer = self._ask("detection", DETECTION_PROMPT, context, schema=DETECTION_SCHEMA)
             if answer is None:
                 return False
+        rule = self._bad_model_rule()
+        if rule:                                   # règle déterministe : le modèle promu est en cause
+            if normalize(answer.get("cause", "")) != "mauvais_modele":
+                log.info("Règle mauvais_modele : cause '%s' du LLM remplacée (%s)", answer.get("cause"), rule)
+            answer = {**answer, "incident": True, "cause": "mauvais_modele", "composant": "modele",
+                      "gravite": answer.get("gravite") or "elevee", "justification": rule}
         if not self._yes(answer.get("incident")):
+            return False
+        found = guards.anomalies(self.trend[-1], self.signals)
+        if not rule and not found:                 # aucune mesure ni aucun signal hors objectif
+            log.info("Incident proposé par le LLM écarté : aucune mesure hors objectif (%s)",
+                     answer.get("justification"))
+            self._record("incident_rejected_by_rule", {"reponse": answer, "mesures": self.trend[-1]})
             return False
         result = self.tool_ouvrir_incident(cause=answer.get("cause", "inconnue"),
                                            composant=answer.get("composant", "inconnu"),
@@ -298,6 +337,19 @@ class LLMReliabilityAgent:
         }
 
     def _phase_action(self) -> None:
+        rule = self._bad_model_rule()
+        tried = [a["action"] for a in self.incident.actions]
+        if rule and Action.ROLLBACK_MODEL.value not in tried:
+            # Décision critique prise par une règle, pas par un LLM (ni l'agent, ni le juge)
+            if self.autonomy.get(Action.ROLLBACK_MODEL.value) == "auto":
+                self.tool_executer_action(action=Action.ROLLBACK_MODEL.value, justification=rule,
+                                          regle="mauvais_modele")
+            elif not self.incident.human_notified:
+                self.tool_prevenir_humain(message=f"rollback nécessaire, validation humaine requise : {rule}")
+            return
+        if self.signals is not None and self.signals.mlflow_ok is False:
+            self._mlflow_down_rule(tried)
+            return
         context, history = self._action_context(), []
         for _ in range(config.LLM_MAX_PROPOSALS):
             answer = self._ask("action", ACTION_PROMPT, context, history, schema=ACTION_SCHEMA)
@@ -342,16 +394,51 @@ class LLMReliabilityAgent:
                            schema=VERIFICATION_SCHEMA)
         if answer is None:
             return None
-        verdict = normalize(answer.get("verdict") or "attendre")
+        llm_verdict = normalize(answer.get("verdict") or "attendre")
+        verdict = self._check_verdict(llm_verdict)
         level = normalize(answer.get("gravite") or "")
         if level in LEVELS and level != self.incident.level:
             self.tool_changer_gravite(gravite=level, justification=answer.get("pensee", ""))
         if verdict in ("repare", "reparee", "resolu"):
-            self.tool_clore_incident(resume=answer.get("resume") or answer.get("pensee", ""))
+            resume = answer.get("resume") or answer.get("pensee", "")
+            if llm_verdict != verdict:             # le LLM n'a pas vu la réparation : résumé factuel
+                last = self.incident.actions[-1]["action"] if self.incident.actions else "intervention humaine"
+                resume = f"service revenu sous l'objectif depuis 2 mesures après {last}"
+            self.tool_clore_incident(resume=resume)
             return "repare"
         if verdict in ("pas_repare", "non_repare", "aggrave"):
             return verdict if verdict != "non_repare" else "pas_repare"
         return "attendre"
+
+    def _mlflow_down_rule(self, tried: list[str]) -> None:
+        """MLflow injoignable : aucune action sur l'API ou le modèle n'est possible (elle perdrait
+        son modèle). Protéger les utilisateurs si besoin (mode dégradé), puis prévenir un humain."""
+        inc = self.incident
+        users_hit = guards.breaches(self.trend[-1]) != []
+        if users_hit and not inc.degraded and Action.DEGRADED_MODE.value not in tried                 and self.autonomy.get(Action.DEGRADED_MODE.value) == "auto":
+            self.tool_executer_action(action=Action.DEGRADED_MODE.value, regle="mlflow_indisponible",
+                                      justification="MLflow injoignable : modèle de secours pour les utilisateurs")
+        if not inc.human_notified:
+            self.tool_prevenir_humain(message="MLflow injoignable : l'API ne peut plus charger son modèle. "
+                                              "Relancer MLflow (restart_mlflow demande une validation humaine).")
+
+    def _check_verdict(self, verdict: str) -> str:
+        """Écarte un verdict contredit par les mesures (règles de guards.py)."""
+        inc = self.incident
+        since = inc.since_last_action
+        checked = verdict
+        repaired = len(since) >= 2 and all(guards.healthy(m) for m in since[-2:])
+        if repaired:                               # 2 mesures saines (sondes = vrai modèle) : réparé
+            checked = "repare"
+        elif verdict in ("repare", "reparee", "resolu"):     # moins de 2 mesures saines : pas encore
+            checked = "attendre" if since and guards.healthy(since[-1]) else "pas_repare"
+        elif verdict == "aggrave" and not guards.worse(inc.before_last_action, since[-1] if since else None):
+            checked = "pas_repare"
+        if checked != verdict:
+            log.info("Verdict '%s' du LLM corrigé en '%s' d'après les mesures", verdict, checked)
+            self._record("verdict_corrected", {"incident_id": inc.id, "llm": verdict, "retenu": checked,
+                                               "avant": inc.before_last_action, "depuis": since[-2:]})
+        return checked
 
     def _on_llm_down(self, exc: Exception) -> None:
         log.error("LLM indisponible : %s", exc)
@@ -402,6 +489,10 @@ class LLMReliabilityAgent:
         if level not in LEVELS:
             return {"erreur": f"gravité invalide '{gravite}', choisir parmi {LEVELS}"}
         cause, component = normalize(cause), normalize(composant)
+        checked = guards.checked_cause(cause, self.trend[-1], self.signals)
+        if checked != cause:
+            log.info("Cause '%s' du LLM contredite par les signaux : '%s' retenue", cause, checked)
+            cause = checked
         inc = IncidentState(id=f"inc-{int(self.now)}", opened_at=self.now,
                             cause=cause if cause in CAUSES else "inconnue",
                             component=component if component in COMPONENTS else "inconnu",
@@ -428,7 +519,8 @@ class LLMReliabilityAgent:
                                           "justification": justification})
         return {"ok": True, "gravite": level}
 
-    def tool_executer_action(self, action="", justification="", **_) -> dict:
+    def tool_executer_action(self, action="", justification="", regle: str | None = None, **_) -> dict:
+        """regle : nom de la règle déterministe qui impose l'action (pas de juge LLM dans ce cas)."""
         inc = self.incident
         if not inc:
             return {"erreur": "ouvre d'abord un incident"}
@@ -437,35 +529,47 @@ class LLMReliabilityAgent:
         except ValueError:
             return {"erreur": f"action inconnue '{action}'", "actions_disponibles": [a.value for a in CATALOG]}
 
-        verdict = self.judge.review("reliability", {"action": act.value, "justification": justification}, {
-            "incident": self._incident_view(), "mesures": self.trend[-1],
-            "dernier_changement_de_version_du_modele": self._version_change_view(),
-            "signaux": asdict(self.signals) if self.signals else None,
-            "politique_autonomie": self.autonomy,
-            "action_risque": CATALOG[act].risk, "action_description": CATALOG[act].description,
-        })
+        refusal = None if regle else guards.forbidden(act.value, self.signals)
+        if regle:
+            verdict = Verdict(True, 10, f"règle déterministe {regle} : {justification}", "regle")
+        elif refusal:                              # règle absolue vérifiable par le code : pas besoin du juge
+            verdict = Verdict(False, 0, refusal, "regle")
+        else:
+            verdict = self.judge.review("reliability", {"action": act.value, "justification": justification}, {
+                "incident": self._incident_view(), "mesures": self.trend[-1],
+                "dernier_changement_de_version_du_modele": self._version_change_view(),
+                "signaux": asdict(self.signals) if self.signals else None,
+                "politique_autonomie": self.autonomy,
+                "action_risque": CATALOG[act].risk, "action_description": CATALOG[act].description,
+            })
         judge_info = {"note": verdict.score, "critique": verdict.critique, "juge": verdict.by}
         if not verdict.approved:
             inc.note(self.now, "action_refusee", action=act.value, **judge_info)
             inc.rejections.append({"action": act.value, "critique_du_juge": verdict.critique})
             self._record("judge_rejected", {"incident_id": inc.id, "action": act.value,
                                             "justification": justification, **judge_info})
-            log.info("Juge : REJET de %s (%d/10) %s", act.value, verdict.score, verdict.critique)
+            log.info("%s : REJET de %s (%d/10) %s", "Règle" if verdict.by == "regle" else "Juge",
+                     act.value, verdict.score, verdict.critique)
             return {"refusee_par_le_juge": True, **judge_info}
 
         snap = self.actions.take_snapshot()
         result = self.actions.execute(act)
         entry = {"action": act.value, "success": result.success, "detail": result.detail,
-                 "t": round(self.now - inc.opened_at, 1), "by": "llm", "justification": justification,
+                 "t": round(self.now - inc.opened_at, 1), "by": f"regle:{regle}" if regle else "llm",
+                 "justification": justification,
                  "judge_score": verdict.score, "erreurs_pct_avant": self.trend[-1]["erreurs_pct"]}
         inc.actions.append(entry)
         inc.snapshot, inc.last_action_at, inc.since_last_action = snap, self.now, []
         inc.before_last_action = self._short(self.trend[-1])
         if result.success and act == Action.ROLLBACK_MODEL:
             self.agent_changed_version = True
+        if result.success and act in RESTART_ACTIONS:
+            inc.api_restart_deadline = self.now + config.RELIABILITY_RESTART_GRACE_SECONDS
+        self._rebase()
         inc.note(self.now, "action", **entry)
         self._record(f"action:{act.value}", {"incident_id": inc.id, **entry})
-        log.info("Action %s (juge %d/10) : %s", act.value, verdict.score, result.detail)
+        log.info("Action %s (%s) : %s", act.value,
+                 f"règle {regle}" if regle else f"juge {verdict.score}/10", result.detail)
 
         out = {"succes": result.success, "detail": result.detail, "juge": judge_info,
                "snapshot_disponible": bool(getattr(snap, "complete", False))}
@@ -481,6 +585,7 @@ class LLMReliabilityAgent:
         if not inc or inc.snapshot is None:
             return {"erreur": "aucun snapshot à restaurer"}
         result = self.actions.restore(inc.snapshot)
+        self._rebase()
         inc.snapshot = None
         self.agent_changed_version = True
         inc.note(self.now, "snapshot_restaure", success=result.success, detail=result.detail)

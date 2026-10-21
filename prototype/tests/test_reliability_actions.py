@@ -166,3 +166,12 @@ def test_snapshot_is_incomplete_when_mlflow_is_down():
                          "mlops-mlflow": FakeContainer()})
     actions = ReliabilityActions(docker_client=docker, mlflow_client=DownMlflow(), http=FakeHttp())
     assert actions.take_snapshot().complete is False
+
+def test_restore_never_puts_back_a_rolled_back_version():
+    actions, docker, mlflow, http, _ = make()
+    snap = actions.take_snapshot()                    # production = 4
+    mlflow.versions["4"].tags["rolled_back"] = "true" # la v4 était cassée : rollback vers la 3
+    mlflow.aliases["production"] = "3"
+    result = actions.restore(snap)
+    assert mlflow.aliases["production"] == "3"
+    assert "non restaurée" in result.detail
