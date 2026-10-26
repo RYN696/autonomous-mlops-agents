@@ -18,6 +18,7 @@ from agents.quality.drift import calculate_drift
 from agents.quality.validation import validate_current_data
 from common import config
 from pipeline.data import DATA_DIR, read_dataframe
+from agents.quality.explain import add_explanation
 
 
 def load_raw(year: int, month: int) -> pd.DataFrame:
@@ -55,6 +56,7 @@ def main(argv=None) -> None:
     p.add_argument("--ref-month", type=int, default=1)
     p.add_argument("--scenario", choices=["normal", "drift", "corrupted"], default="normal")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-llm", action="store_true", help="désactive l'explication par LLM")
     args = p.parse_args(argv)
 
     mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
@@ -66,6 +68,7 @@ def main(argv=None) -> None:
     raw, clean = apply_scenario(args.scenario, raw, clean)
 
     event = run_check(model, reference, clean, raw)
+    event = add_explanation(event, use_llm=not args.no_llm)
 
     if args.dry_run:
         print(event.model_dump_json(indent=2))

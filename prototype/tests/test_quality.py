@@ -141,3 +141,62 @@ def test_prediction_drift_alone_triggers_event():
     e = build_event(validate_current_data(make_df()), 0.25, 1, prediction_drift=0.56)
     assert e.type == EventType.DRIFT_DETECTED
     assert e.payload["reason"] == "distribution_drift"
+
+from agents.quality import explain
+
+
+def test_explanation_falls_back_without_llm():
+    e = build_event(validate_current_data(make_df()), 0.0, 0)
+    out = explain.add_explanation(e, use_llm=False)
+    assert out.payload["explanation_source"] == "template"
+    assert out.type == e.type and out.severity == e.severity
+
+
+def test_llm_text_is_used_but_decision_unchanged(monkeypatch):
+    monkeypatch.setattr(explain, "ask_llm", lambda *a, **k: "Test explanation.")
+    e = build_event(validate_current_data(make_df()), 0.9, 3)
+    out = explain.add_explanation(e)
+    assert out.payload["explanation"] == "Test explanation."
+    assert out.payload["explanation_source"] == "llm"
+    assert out.type == EventType.DRIFT_DETECTED
+
+
+def test_llm_down_does_not_crash(monkeypatch):
+    monkeypatch.setattr(explain, "ask_llm", lambda *a, **k: None)
+    e = build_event(validate_current_data(make_df()), 0.9, 3)
+    assert explain.add_explanation(e).payload["explanation_source"] == "template"
+
+def test_findings_flag_the_real_cause():
+    e = build_event(validate_current_data(make_df()), 0.25, 1, prediction_drift=0.56)
+    f = explain.build_findings(e.payload)
+    assert "ABOVE" in f[0] and "below" in f[1] and "below" in f[2]
+
+
+def test_invented_number_is_rejected(monkeypatch):
+    monkeypatch.setattr(explain, "ask_llm", lambda *a, **k: "Drift is 0.99.")
+    e = build_event(validate_current_data(make_df()), 0.25, 1, prediction_drift=0.56)
+    out = explain.add_explanation(e)
+    assert out.payload["explanation_source"] == "template"
+    assert out.payload["explanation_rejected"] is True
+
+
+def test_valid_numbers_are_accepted(monkeypatch):
+    monkeypatch.setattr(explain, "ask_llm", lambda *a, **k: "Prediction drift is 0.56, above 0.10.")
+    e = build_event(validate_current_data(make_df()), 0.25, 1, prediction_drift=0.56)
+    assert explain.add_explanation(e).payload["explanation_source"] == "llm"    
+
+def test_ask_llm_builds_request_and_parses_reply(monkeypatch):
+    sent = {}
+
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self): return {"message": {"content": " Prediction drift is 0.56. "}}
+
+    def fake_post(url, json=None, timeout=None):
+        sent["body"] = json
+        return FakeResp()
+
+    monkeypatch.setattr(explain.requests, "post", fake_post)
+    e = build_event(validate_current_data(make_df()), 0.25, 1, prediction_drift=0.56)
+    assert explain.ask_llm("drift_detected", "warning", e.payload) == "Prediction drift is 0.56."
+    assert "FINDINGS" in sent["body"]["messages"][1]["content"]
