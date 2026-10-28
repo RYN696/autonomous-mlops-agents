@@ -44,4 +44,5 @@ def calculate_drift(reference: pd.DataFrame, current: pd.DataFrame, model) -> di
         "num_drifted_columns": len(drifted),
         "prediction_drift": scores["prediction"],
         "column_scores": scores,
+        "frames": (ref, cur),
     }

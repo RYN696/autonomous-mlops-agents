@@ -19,6 +19,7 @@ from agents.quality.validation import validate_current_data
 from common import config
 from pipeline.data import DATA_DIR, read_dataframe
 from agents.quality.explain import add_explanation
+from agents.quality.rootcause import analyze_shift
 
 
 def load_raw(year: int, month: int) -> pd.DataFrame:
@@ -44,8 +45,11 @@ def apply_scenario(scenario: str, raw: pd.DataFrame, clean: pd.DataFrame):
 def run_check(model, reference, clean, raw):
     validation = validate_current_data(raw)
     drift = calculate_drift(reference, clean, model)
-    return build_event(validation, drift["drift_score"], drift["num_drifted_columns"],
-                       prediction_drift=drift["prediction_drift"])
+    event = build_event(validation, drift["drift_score"], drift["num_drifted_columns"],
+                        prediction_drift=drift["prediction_drift"])
+    payload = dict(event.payload)
+    payload["root_cause"] = analyze_shift(*drift["frames"])
+    return event.model_copy(update={"payload": payload})
 
 
 def main(argv=None) -> None:

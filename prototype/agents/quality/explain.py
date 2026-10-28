@@ -13,15 +13,33 @@ TIMEOUT = float(os.getenv("QUALITY_LLM_TIMEOUT", "120"))
 SYSTEM = (
     "You are the data-quality agent of an MLOps pipeline predicting NYC taxi trip duration. "
     "You receive FINDINGS already computed by the rules. "
-    "Explain the decision to a human in at most 2 short sentences. "
-    "Present as the cause ONLY the findings marked ABOVE; say the others are normal. "
-    "Use ONLY numbers that appear in the findings. "
+    "Explain the decision to a human in at most 3 short sentences. "
+    "Present as causes ONLY the findings marked ABOVE or CHANGED; say the others are normal or stable. "
+    "Quote every number exactly as written in the findings and use no other number. "
     "Never say a value exceeds a level unless its finding says ABOVE. "
     "Say that the distribution of the model's predictions changed; "
     "never claim the model is inaccurate or broken, we have no measure of its real error. "
-    "Write in plain lowercase words, do not copy the words ABOVE or below literally."
+    "Do not copy the words ABOVE, CHANGED, below or stable literally."
 )
 
+ZONE_SHIFT_MIN_POINTS = 5.0   # une zone est "changée" si sa part bouge d'au moins 5 points
+MEDIAN_CHANGE_MIN_PCT = 10    # une médiane est "changée" si elle varie d'au moins 10 %
+
+
+def _median_line(name: str, unit: str, m: dict) -> str:
+    pct = m["change_pct"]
+    state = "CHANGED" if pct is not None and abs(pct) >= MEDIAN_CHANGE_MIN_PCT else "stable"
+    change = f" ({pct:+d}%)" if pct is not None else ""
+    return f"{name}: {m['ref']} -> {m['cur']} {unit}{change}: {state}"
+
+
+def _zone_line(label: str, shifts: list[dict]) -> str:
+    if shifts:
+        z = max(shifts, key=lambda s: abs(s["cur_share_pct"] - s["ref_share_pct"]))
+        if abs(z["cur_share_pct"] - z["ref_share_pct"]) >= ZONE_SHIFT_MIN_POINTS:
+            return (f"Largest {label} zone change: zone {z['zone']}, "
+                    f"{z['ref_share_pct']}% -> {z['cur_share_pct']}% of trips: CHANGED")
+    return f"{label.capitalize()} zone mix: stable (no zone moved by {ZONE_SHIFT_MIN_POINTS:g} points or more)"
 
 def build_findings(p: dict) -> list[str]:
     """Constats tranchés par du code, pas par le LLM."""
@@ -29,12 +47,19 @@ def build_findings(p: dict) -> list[str]:
     ds, dthr = p.get("drift_score", 0.0), p.get("drift_threshold", 0.5)
     inv, cthr = p.get("invalid_share", 0.0), config.CRITICAL_INVALID_SHARE
     flag = lambda v, t: "ABOVE" if v >= t else "below"
-    return [
+    lines = [
         f"Prediction drift = {pd_:.2f} (alert level {pthr:.2f}): {flag(pd_, pthr)}",
         f"Drifted columns = {p.get('num_drifted_columns', 0)} of 4, share {ds:.2f} "
         f"(alert level {dthr:.2f}): {flag(ds, dthr)}",
         f"Invalid rows = {inv * 100:.1f}% (critical level {cthr * 100:.0f}%): {flag(inv, cthr)}",
     ]
+    rc = p.get("root_cause")
+    if rc:
+        lines.append(_median_line("Median predicted duration", "min", rc["prediction_median_min"]))
+        lines.append(_median_line("Median trip distance", "miles", rc["distance_median_miles"]))
+        lines.append(_zone_line("pickup", rc.get("top_pickup_zone_shifts", [])))
+        lines.append(_zone_line("dropoff", rc.get("top_dropoff_zone_shifts", [])))
+    return lines
 
 
 def numbers_ok(text: str, findings: list[str]) -> bool:

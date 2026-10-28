@@ -200,3 +200,30 @@ def test_ask_llm_builds_request_and_parses_reply(monkeypatch):
     e = build_event(validate_current_data(make_df()), 0.25, 1, prediction_drift=0.56)
     assert explain.ask_llm("drift_detected", "warning", e.payload) == "Prediction drift is 0.56."
     assert "FINDINGS" in sent["body"]["messages"][1]["content"]
+
+def _payload_with_root_cause(pickup_ref, pickup_cur):
+    e = build_event(validate_current_data(make_df()), 0.25, 1, prediction_drift=0.56)
+    p = dict(e.payload)
+    p["root_cause"] = {
+        "prediction_median_min": {"ref": 12.2, "cur": 17.1, "change_pct": 40},
+        "distance_median_miles": {"ref": 1.9, "cur": 2.9, "change_pct": 52},
+        "top_pickup_zone_shifts": [{"zone": "74", "ref_share_pct": pickup_ref, "cur_share_pct": pickup_cur}],
+        "top_dropoff_zone_shifts": [],
+    }
+    return p
+
+
+def test_findings_flag_median_changes():
+    text = "\n".join(explain.build_findings(_payload_with_root_cause(19.8, 18.6)))
+    assert "Median trip distance: 1.9 -> 2.9 miles (+52%): CHANGED" in text
+    assert "Median predicted duration: 12.2 -> 17.1 min (+40%): CHANGED" in text
+
+
+def test_small_zone_shift_is_stable():
+    text = "\n".join(explain.build_findings(_payload_with_root_cause(19.8, 18.6)))
+    assert "Pickup zone mix: stable" in text
+
+
+def test_large_zone_shift_is_reported():
+    text = "\n".join(explain.build_findings(_payload_with_root_cause(5.0, 12.0)))
+    assert "zone 74, 5.0% -> 12.0% of trips: CHANGED" in text
