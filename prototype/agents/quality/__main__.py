@@ -63,6 +63,7 @@ def main(argv=None) -> None:
     p.add_argument("--scenario", choices=["normal", "drift", "corrupted"], default="normal")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--no-llm", action="store_true", help="désactive l'explication par LLM")
+    p.add_argument("--check-id", help="identifiant du contrôle (donné par la page Scénarios de l'interface)")
     p.add_argument("--watch", action="store_true",
                    help="service : contrôle toutes les QUALITY_CHECK_MINUTES et à chaque model_promoted")
     args = p.parse_args(argv)
@@ -93,7 +94,7 @@ def check_once(args) -> None:
     event = run_check(model, reference, clean, raw)
     # Mois contrôlé : l'orchestrateur le donne à Retrain comme période d'entraînement
     event.payload["period"] = f"{args.year}-{args.month:02d}"
-    event.payload["check_id"] = uuid.uuid4().hex[:8]  # traçabilité : repris par l'orchestrateur
+    event.payload["check_id"] = args.check_id or uuid.uuid4().hex[:8]  # traçabilité : repris par l'orchestrateur
     event = add_explanation(event, use_llm=not args.no_llm)
 
     if args.dry_run:
@@ -103,7 +104,8 @@ def check_once(args) -> None:
     from common.action_log import ActionLog
     from common.events import EventBus
     publish_quality_result(event, EventBus(), ActionLog())
-    print(f"Publié : {event.type.value} ({event.severity.value}) reason={event.payload.get('reason')}")
+    print(f"Publié : {event.type.value} ({event.severity.value}) reason={event.payload.get('reason')} "
+          f"check_id={event.payload['check_id']}")
 
 
 if __name__ == "__main__":

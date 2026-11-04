@@ -10,4 +10,5 @@ COPY pipeline ./pipeline
 COPY agents ./agents
 COPY rules ./rules
 COPY ui ./ui
+COPY scripts ./scripts
 ENV PYTHONPATH=/app

@@ -6,6 +6,7 @@
 /agents/<clé>     ce que fait un agent, ce qu'il écoute et publie, ses dernières actions
 /journal          journal d'actions complet, filtrable
 /graph            les graphes LangGraph de l'orchestrateur (Mermaid)
+/scenarios        banc de test : boutons pour provoquer dérives et pannes, sans terminal
 POST /answer      réponse humaine à une question (publie approval_given)
 Les gabarits et le style sont dans prototype/ui/.
 """
@@ -15,20 +16,24 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, abort, redirect, render_template, request
+from flask import Flask, abort, flash, redirect, render_template, request
 
 from common.events import Event, EventType
 from ui import traces as tr
 from ui.catalog import AGENTS, BY_KEY
+from ui.scenarios import SCENARIOS, ScenarioRunner
 from ui.status import PipelineStatus
 
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 
 
-def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | None = None) -> Flask:
+def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | None = None,
+               runner: ScenarioRunner | None = None) -> Flask:
     app = Flask("orchestrator-web", template_folder=str(UI_DIR / "templates"),
                 static_folder=str(UI_DIR / "static"))
+    app.secret_key = "banc-de-test-local"  # messages flash seulement (aucune session utilisateur)
     status = status or PipelineStatus(log.engine)
+    runner = runner or ScenarioRunner(log)
 
     @app.context_processor
     def common_values():
@@ -109,6 +114,41 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
         if orchestrator is None:
             return "Orchestrateur non branché sur cette page.", 404
         return render_template("graph.html", graphs=orchestrator.mermaid(), in_progress=in_progress())
+
+    @app.get("/scenarios")
+    def scenarios():
+        runs = []
+        for r in runner.runs:
+            trace_id = None
+            if r.check_id:
+                trace_id = tr.trace_of_check(log.engine, r.check_id)
+            elif r.scenario.target == "reliability" and r.scenario.key != "recover":
+                trace_id = tr.incident_after(log.engine, r.started)
+            runs.append({"run": r, "trace_id": trace_id})
+        groups: dict[str, list] = {}
+        for s in SCENARIOS:
+            groups.setdefault(s.group, []).append(s)
+        return render_template("scenarios.html", groups=groups, runs=runs, runner=runner,
+                               trained=tr.trained_months(log.engine), agents_by_key=BY_KEY)
+
+    @app.post("/scenarios/run")
+    def run_scenario():
+        try:
+            runner.start(request.form["scenario"], {"month": request.form.get("month")})
+        except (PermissionError, RuntimeError, KeyError) as exc:
+            flash(str(exc))
+        return redirect("/scenarios")
+
+    @app.post("/scenarios/traffic")
+    def traffic():
+        try:
+            if request.form.get("action") == "start":
+                runner.start_traffic(request.form.get("rps", type=float) or 5.0)
+            else:
+                runner.stop_traffic()
+        except PermissionError as exc:
+            flash(str(exc))
+        return redirect("/scenarios")
 
     @app.post("/answer")
     def answer():

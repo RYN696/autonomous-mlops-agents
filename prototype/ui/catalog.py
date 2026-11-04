@@ -44,7 +44,10 @@ AGENTS: tuple[AgentInfo, ...] = (
 BY_KEY = {a.key: a for a in AGENTS}
 BY_LOG_NAME = {a.log_name: a for a in AGENTS}
 HUMAN = AgentInfo("human", "Humain", "humain", "", "a-human", "Valide ou refuse sur cette page.", (), ())
+DEMO = AgentInfo("demo", "Banc de test", "demo", "", "a-demo", "Scénarios lancés depuis la page Scénarios.", (), ())
 
 
 def agent_of(log_name: str) -> AgentInfo:
+    if log_name == DEMO.log_name:
+        return DEMO
     return BY_LOG_NAME.get(log_name) or AgentInfo(log_name, log_name, log_name, "", "a-other", "", (), ())

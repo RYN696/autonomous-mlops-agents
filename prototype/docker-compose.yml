@@ -141,6 +141,7 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000   # interface : modèle en production
       API_URL: http://api:9696                  # interface : santé de l'API
       COMPOSE_PROJECT_NAME: prototype           # interface : état des conteneurs du projet
+      DEMO_CONTROLS: "1"                        # interface : page Scénarios (boutons de dérive et de panne)
       PYTHONUNBUFFERED: "1"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock  # interface : état des conteneurs (lecture seule en pratique)

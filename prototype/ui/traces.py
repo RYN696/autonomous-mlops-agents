@@ -190,9 +190,9 @@ def load_trace(engine, trace_id: str, notifier=None) -> Trace | None:
         kind = trace_key(rows[0]["details"])[0]
         extra: list[dict] = []
         check_ids = {r["details"].get("check_id") for r in rows if (r["details"] or {}).get("check_id")}
-        for check_id in check_ids:  # le contrôle Qualité qui a déclenché la demande
+        for check_id in check_ids:  # le contrôle Qualité qui a déclenché la demande (et le bouton du banc de test)
             extra += _rows(conn, select(action_log).where(
-                action_log.c.agent == "agent_qualite", details["check_id"].as_string() == check_id))
+                action_log.c.agent.in_(("agent_qualite", "demo")), details["check_id"].as_string() == check_id))
         opened = next((r for r in rows if r["action"] == "incident_opened"), None)
         if opened:  # la décision du LLM qui a ouvert l'incident (pas encore d'incident_id à ce moment)
             ts = opened["timestamp"]
@@ -229,6 +229,36 @@ def journal(engine, agent: str | None = None, action: str | None = None, q: str 
         key = trace_key(r["details"])
         r["trace_id"] = key[1] if key else None
     return rows
+
+
+def trace_of_check(engine, check_id: str) -> str | None:
+    """Demande ouverte par l'orchestrateur pour ce contrôle Qualité (None : pas encore, ou pas de dérive)."""
+    with engine.connect() as conn:
+        d = conn.execute(select(action_log.c.details).where(
+            action_log.c.action == "drift_received",
+            action_log.c.details["check_id"].as_string() == check_id).limit(1)).scalar()
+    return (d or {}).get("request_id")
+
+
+def incident_after(engine, since: datetime) -> str | None:
+    """Premier incident Fiabilité ouvert après un instant (réaction à une panne injectée)."""
+    with engine.connect() as conn:
+        rows = _rows(conn, select(action_log).where(
+            action_log.c.agent == "agent_fiabilite", action_log.c.action == "incident_opened")
+            .order_by(action_log.c.id.desc()).limit(20))
+    after = [r for r in rows if utc(r["timestamp"]) >= since]
+    return (after[-1]["details"] or {}).get("incident_id") if after else None
+
+
+def trained_months(engine) -> set[str]:
+    """Mois déjà entraînés par Retrain (une nouvelle demande sur ces mois serait ignorée)."""
+    with engine.connect() as conn:
+        rows = conn.execute(select(action_log.c.details).where(action_log.c.action == "retrain_started"))
+        months: set[str] = set()
+        for (d,) in rows:
+            p = (d or {}).get("period")
+            months.update(p if isinstance(p, list) else [p] if p else [])
+    return months
 
 
 def actions_of(engine, log_name: str) -> list[str]:

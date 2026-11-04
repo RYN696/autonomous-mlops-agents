@@ -80,12 +80,82 @@ L'interface (servie par l'orchestrateur, code dans `ui/`) se met à jour toute s
 
 Qualité et Fiabilité utilisent Ollama, lancé **sur le PC** (`ollama serve`, modèles
 `qwen2.5:3b`, `llama3.2:3b`, `llama3.1:8b`) : les conteneurs le joignent par
-`host.docker.internal`. Une démo se déclenche depuis les conteneurs, par exemple :
+`host.docker.internal`. Pour jouer des scénarios, voir la section suivante.
+
+## Tester la pipeline avec l'interface
+
+Tout se fait depuis l'interface : la page **Scénarios de test** a un bouton par
+dérive ou panne, et chaque lancement mène au parcours qu'il a déclenché. L'interface
+se rafraîchit toute seule toutes les 5 s.
+
+### 1. Démarrer
 
 ```bash
-docker compose exec quality python -m agents.quality --year 2023 --month 2 --scenario drift
-python -m scripts.inject_failure crash      # depuis le PC : l'agent Fiabilité répare
+# Windows (PowerShell) : .venv\Scripts\activate     macOS / Linux : source .venv/bin/activate
+ollama serve                 # si Ollama ne tourne pas déjà (agents Qualité et Fiabilité)
+docker compose up -d --build
 ```
+
+Ouvrir http://localhost:8080. Si le port 8080 est déjà pris (par exemple par Oracle),
+lancer avec un autre port et ouvrir http://localhost:8090 :
+
+```bash
+# PowerShell
+$env:ORCHESTRATOR_HOST_PORT=8090; docker compose up -d --build
+# macOS / Linux
+ORCHESTRATOR_HOST_PORT=8090 docker compose up -d --build
+```
+
+Vérifier sur la carte que les 5 agents sont « en marche », puis écrire son prénom
+dans **Signer en tant que** (menu de gauche) : il signe les validations.
+
+### 2. Scénarios
+
+Menu **Scénarios de test** : choisir le mois (pour les scénarios de données), cliquer
+**Lancer**, puis suivre le lien **voir le parcours** dans la colonne **Lancements**.
+Quand une question apparaît (dérive avec le budget de démo), la valider ou la refuser
+sur la vue d'ensemble ou directement dans le parcours. Le bouton **Démarrer le trafic**
+simule des utilisateurs, utile pendant une panne. Chaque lancement est écrit dans le
+journal d'actions (acteur « Banc de test »). La page est active grâce à
+`DEMO_CONTROLS: "1"` dans le service `orchestrator`.
+
+Ce que chaque scénario doit montrer (avec la commande équivalente, si on préfère le terminal) :
+
+| Scénario | Commande équivalente | Ce qu'on doit voir dans l'interface |
+| --- | --- | --- |
+| Dérive des données | `docker compose exec quality python -m agents.quality --year 2023 --month 3 --scenario drift` | Parcours « Dérive 2023-03 » et une question dans **À valider**. Cliquer **Valider** : Retrain entraîne (~1 min), puis promotion ou promotion bloquée |
+| Refus humain | même commande avec `--month 4`, puis **Refuser** | Parcours « Refusé par un humain », la production ne change pas |
+| Données corrompues | `docker compose exec quality python -m agents.quality --year 2023 --month 2 --scenario corrupted` | Parcours « Données corrompues », aucun réentraînement |
+| Crash de l'API | `python -m scripts.inject_failure crash` | Incident `api_arretee`, Fiabilité redémarre l'API, puis « Résolu en … s » |
+| Erreurs 500 | `python -m scripts.inject_failure errors` | Incident, décisions du LLM et du juge, action de Fiabilité étape par étape |
+| Latence | `python -m scripts.inject_failure latency` | Même déroulé, cause latence |
+| Mauvais modèle | `python -m scripts.inject_failure bad-model` | Rollback automatique vers la version précédente (règle déterministe) |
+| MLflow en panne | `python -m scripts.inject_failure mlflow-down` | Mode dégradé et demande d'intervention humaine (relancer MLflow demande une validation) |
+| Dérive pendant une panne | `crash`, puis tout de suite la dérive | Parcours de dérive « Mise de côté : incident en cours » |
+
+Annuler toutes les pannes : bouton **Remettre en état** (ou `python -m scripts.inject_failure recover`).
+
+Changer de mois à chaque dérive (3, 4, 5…) : Retrain ignore un mois déjà entraîné
+(anti-doublon, la liste des mois indique « déjà entraîné »), et le parcours finit alors
+en « Ignoré par Retrain ». La première
+fois, les données du mois sont téléchargées : c'est un peu plus long.
+
+### 3. Où lire la traçabilité
+
+- **Parcours** : cliquer sur un parcours pour sa chronologie (heure, temps écoulé, agent,
+  ce qu'il a fait). **détails** affiche le JSON brut de l'étape.
+- **Agents** : toutes les actions d'un agent, filtrables par type (ex. `incident_opened`).
+- **Journal d'actions** : recherche par identifiant de parcours, cause ou version.
+- **Graphes LangGraph** : le circuit de décision de l'orchestrateur et les demandes en pause.
+
+### À savoir
+
+- Le budget de l'agent Coûts vaut `0.01` € dans `docker-compose.yml` (démo du dépassement) :
+  chaque dérive demande donc une validation. Pour un réentraînement automatique, mettre
+  `MONTHLY_BUDGET: "20"` puis `docker compose up -d cost`.
+- Un challenger n'est promu que s'il réduit l'erreur d'au moins 2 % (`MIN_IMPROVEMENT`) :
+  la promotion bloquée est le résultat le plus fréquent.
+- Si l'orchestrateur redémarre, les questions en attente expirent : relancer la dérive.
 
 ## Tests
 

@@ -91,6 +91,14 @@ SUMMARIES: dict[str, Callable[[dict], str]] = {
     "drift_detected": _drift,
     "quality_ok": lambda d: _with_period(f"Données conformes ({d.get('row_count')} lignes, "
                                          f"dérive {_num(d.get('drift_score'))})", d),
+    # Banc de test (page Scénarios)
+    "scenario_started": lambda d: (f"Scénario lancé : {d.get('title')}"
+                                   + (f" (2023-{int(d['month']):02d})" if d.get("month") else "")),
+    "scenario_finished": lambda d: (f"Scénario {d.get('title')} : {'terminé' if d.get('status') == 'ok' else 'en échec'} "
+                                    f"en {_num(d.get('duration_seconds'), '.0f')} s"),
+    "traffic_started": lambda d: f"Trafic simulé démarré ({d.get('rps')} requêtes/s)",
+    "traffic_stopped": lambda d: (f"Trafic simulé arrêté : {d.get('ok')} réponses, {d.get('errors')} erreurs, "
+                                  f"{d.get('fallback')} par le modèle de secours"),
     # Orchestrateur
     "drift_received": lambda d: _with_period(f"Dérive reçue de l'agent Qualité ({d.get('reason')})", d),
     "drift_ignored": lambda d: f"Dérive mise de côté : {d.get('reason')}",

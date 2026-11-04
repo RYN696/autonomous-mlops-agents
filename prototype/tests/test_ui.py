@@ -217,3 +217,81 @@ def test_valider_depuis_un_parcours_revient_sur_le_parcours(client, notifier):
     resp = client.post("/answer", data={"request_id": "r1", "choice": "yes", "who": "omar", "next": "/parcours/r1"})
     assert resp.headers["Location"].endswith("/parcours/r1")
     assert notifier.pending() == []
+
+
+# ---------- banc de test (page Scénarios) ----------
+from ui.scenarios import ScenarioRunner  # noqa: E402
+
+
+def fake_runner(log, outputs=None):
+    outputs = outputs or {}
+
+    def action(run):
+        if run.scenario.key in outputs:
+            raise outputs[run.scenario.key]
+        return f"{run.scenario.key} ok"
+    return ScenarioRunner(log, enabled=True, actions={k: action for k in
+                                                      ("drift", "corrupted", "normal", "crash", "errors",
+                                                       "latency", "bad-model", "mlflow-down", "recover")})
+
+
+def test_un_scenario_est_trace_dans_le_journal_et_relie_au_parcours(log, notifier):
+    runner = fake_runner(log)
+    run = runner.start("drift", {"month": "3"}, wait=True)
+    assert run.status == "ok" and run.params["month"] == 3 and run.check_id
+    assert [r["action"] for r in log.latest()] == ["scenario_finished", "scenario_started"]
+
+    # l'orchestrateur reçoit la dérive de ce contrôle : le parcours commence par le bouton
+    log.record("orchestrator", "drift_received", "taxi-duration",
+               {"request_id": "r9", "check_id": run.check_id, "period": "2023-03"})
+    assert tr.trace_of_check(log.engine, run.check_id) == "r9"
+    t = tr.load_trace(log.engine, "r9")
+    assert t.agents[0].name == "Banc de test" and t.steps[0].summary == "Scénario lancé : Dérive des données (2023-03)"
+
+
+def test_scenario_en_echec_et_desactive(log):
+    runner = fake_runner(log, {"crash": SystemExit("Injection désactivée")})
+    assert runner.start("crash", wait=True).status == "error"
+    assert "Injection désactivée" in runner.runs[0].output
+    with pytest.raises(PermissionError):
+        ScenarioRunner(log, enabled=False).start("crash")
+
+
+def test_page_scenarios_et_boutons(log, notifier):
+    runner = fake_runner(log)
+    orch = Orchestrator(bus=FakeBus(), log=log, notifier=notifier, rules=Rules({}))
+    client = create_app(notifier, FakeBus(), log, orch, status=FakeStatus(), runner=runner).test_client()
+    write(log, 0, "agent_retrain", "retrain_started", request_id="x", period=["2023-02"])
+
+    page = client.get("/scenarios").get_data(as_text=True)
+    assert "Mauvais modèle en production" in page and "2023-02 · déjà entraîné" in page
+
+    assert client.post("/scenarios/run", data={"scenario": "corrupted", "month": "5"}).status_code == 302
+    for _ in range(50):  # le scénario tourne dans un thread
+        if runner.runs[0].status != "running":
+            break
+        import time; time.sleep(0.02)
+    page = client.get("/scenarios").get_data(as_text=True)
+    assert "Données corrompues" in page and "terminé" in page
+
+    page = client.post("/scenarios/run", data={"scenario": "inconnu"}, follow_redirects=True).get_data(as_text=True)
+    assert "inconnu" in page  # message d'erreur affiché, pas de plantage
+
+
+def test_trafic_simule_demarre_et_s_arrete(log, monkeypatch):
+    calls = []
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"degraded": False}
+
+    monkeypatch.setattr("ui.scenarios.requests.post", lambda *a, **k: calls.append(1) or Resp())
+    runner = fake_runner(log)
+    runner.start_traffic(20)
+    import time
+    time.sleep(0.3)
+    runner.stop_traffic()
+    assert runner.traffic.ok >= 2 and not runner.traffic.running
+    assert [r["action"] for r in log.latest()] == ["traffic_stopped", "traffic_started"]

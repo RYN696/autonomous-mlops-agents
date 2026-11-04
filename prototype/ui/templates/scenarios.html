@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Scénarios de test{% endblock %}
+{% block content %}
+<h1>Scénarios de test</h1>
+<p class="sub">Provoque une dérive ou une panne d'un clic, puis suis la réaction des agents dans le parcours qui s'ouvre.
+  Les lancements sont écrits dans le journal d'actions (acteur « Banc de test »).</p>
+
+{% with messages = get_flashed_messages() %}
+  {% for msg in messages %}<div class="panel notice">{{ msg }}</div>{% endfor %}
+{% endwith %}
+{% if not runner.enabled %}
+  <div class="panel notice">Scénarios désactivés : mettre <code>DEMO_CONTROLS: "1"</code> dans le service
+    <code>orchestrator</code> de <code>docker-compose.yml</code>.</div>
+{% endif %}
+
+<div class="grid scen-layout">
+  <div>
+    {% for group, items in groups.items() %}
+      <h2 class="group-title">{{ group }}{% if group == 'Données' %} <span class="muted">· agent Qualité</span>{% elif group == 'Pannes' %} <span class="muted">· agent Fiabilité</span>{% endif %}</h2>
+      <div class="grid scen-grid">
+      {% for s in items %}{% set target = agents_by_key[s.target] %}
+        <form class="panel scen {{ target.color }}" method="post" action="/scenarios/run">
+          <input type="hidden" name="scenario" value="{{ s.key }}">
+          <h3>{{ s.title }}</h3>
+          <p>{{ s.description }}</p>
+          <p class="expected"><b>Réaction attendue</b> {{ s.expected }}</p>
+          <div class="scen-actions">
+            {% if s.with_month %}
+              <select name="month" aria-label="Mois contrôlé">
+                {% for mo in range(2, 13) %}{% set key = '2023-%02d'|format(mo) %}
+                  <option value="{{ mo }}" {{ 'selected' if mo == 3 and s.key == 'drift' }}>{{ key }}{{ ' · déjà entraîné' if key in trained and s.key == 'drift' }}</option>
+                {% endfor %}
+              </select>
+            {% endif %}
+            <button class="go" {{ 'disabled' if not runner.enabled or runner.busy(s.key) }}>
+              {{ 'En cours…' if runner.busy(s.key) else 'Lancer' }}</button>
+          </div>
+        </form>
+      {% endfor %}
+      </div>
+    {% endfor %}
+
+    <h2 class="group-title">Trafic <span class="muted">· utilisateurs simulés</span></h2>
+    <div id="traffic" data-live>
+      <form class="panel scen a-demo" method="post" action="/scenarios/traffic">
+        <h3>Trafic utilisateur</h3>
+        <p>Des trajets aléatoires envoyés en continu à <code>/predict</code>, comme de vrais utilisateurs.
+          Utile pendant une panne pour voir les erreurs et le modèle de secours ; sans trafic, l'agent Coûts
+          finit par conseiller un scale-to-zero.</p>
+        {% set t = runner.traffic %}
+        {% if t.running %}
+          <p class="expected"><b>En cours</b> depuis <span data-ts="{{ t.since|iso }}" data-rel></span> à {{ t.rps }} req/s :
+            {{ t.ok }} réponses, {{ t.errors }} erreurs, {{ t.fallback }} par le modèle de secours.</p>
+          <div class="scen-actions"><button class="no" name="action" value="stop">Arrêter le trafic</button></div>
+        {% else %}
+          <div class="scen-actions">
+            <select name="rps" aria-label="Requêtes par seconde">
+              {% for r in (1, 2, 5, 10) %}<option value="{{ r }}" {{ 'selected' if r == 5 }}>{{ r }} requêtes/s</option>{% endfor %}
+            </select>
+            <button class="go" name="action" value="start" {{ 'disabled' if not runner.enabled }}>Démarrer le trafic</button>
+          </div>
+        {% endif %}
+      </form>
+    </div>
+  </div>
+
+  <div class="panel runs-panel">
+    <h2>Lancements</h2>
+    <div id="runs" data-live>
+    {% for item in runs %}{% set r = item.run %}
+      <div class="run">
+        <div class="head">
+          <span class="badge {{ 'l-run' if r.status == 'running' else ('l-ok' if r.status == 'ok' else 'l-bad') }}">
+            {{ {'running': 'en cours', 'ok': 'terminé', 'error': 'échec'}[r.status] }}</span>
+          <b>{{ r.scenario.title }}</b>{% if r.params.month %} <span class="muted">2023-{{ '%02d'|format(r.params.month) }}</span>{% endif %}
+          <span class="muted" style="margin-left:auto"><span data-ts="{{ r.started|iso }}"></span></span>
+        </div>
+        <div class="muted">
+          {% if item.trace_id %}<a href="/parcours/{{ item.trace_id }}">→ voir le parcours {{ item.trace_id }}</a>
+          {% elif r.status == 'running' %}les agents vont réagir…
+          {% elif r.scenario.key == 'normal' and r.check_id %}<a href="/journal?q={{ r.check_id }}">→ voir le contrôle dans le journal</a>
+          {% elif r.scenario.target == 'reliability' and r.scenario.key != 'recover' %}en attente de la détection par Fiabilité (cycle de 15 s)…
+          {% endif %}
+        </div>
+        {% if r.output %}<details id="run-{{ r.id }}"><summary>sortie</summary><pre class="json">{{ r.output }}</pre></details>{% endif %}
+      </div>
+    {% else %}<p class="empty">Aucun lancement pour l'instant.</p>{% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}
