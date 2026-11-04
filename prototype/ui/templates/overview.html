@@ -2,9 +2,20 @@
 {% import "macros.html" as m %}
 {% block title %}Vue d'ensemble{% endblock %}
 {% block content %}
-<h1>Vue d'ensemble</h1>
-<p class="sub">Les 5 agents surveillent la pipeline taxi NYC, se parlent par Redis et écrivent chaque décision dans le journal d'actions.
-  Pour les mettre à l'épreuve : <a href="/scenarios">lancer un scénario de test</a>.</p>
+{% if open_incidents %}{% set state, title = 'bad', 'Incident en cours' %}
+{% elif questions %}{% set state, title = 'wait', 'Une décision vous attend' %}
+{% else %}{% set state, title = 'ok', 'Tout roule' %}{% endif %}
+<section id="hero" data-live class="hero h-{{ state }}">
+  <div class="light" aria-hidden="true"><span class="r"></span><span class="o"></span><span class="v"></span></div>
+  <div class="hero-text">
+    <div class="eyebrow">Pipeline taxi NYC · en direct</div>
+    <h1>{{ title }}</h1>
+    <p>{% if open_incidents %}<a href="/parcours/{{ open_incidents[0].id }}">{{ open_incidents[0].title }}</a> · l'agent Fiabilité s'en occupe
+      {% elif questions %}{{ questions|length }} validation(s) humaine(s) en attente ↓
+      {% elif production %}Modèle v{{ production.version }} en production{% else %}Aucun modèle en production{% endif %}</p>
+  </div>
+  <a class="hero-cta" href="/storyboard">▶ Lancer un scénario</a>
+</section>
 
 <div id="setup" data-live>
   {% set init = containers.get('init') %}
@@ -30,10 +41,10 @@
     {% else %}<div class="value">—</div><div class="hint">registre MLflow injoignable</div>{% endif %}
   </div>
   <div class="kpi">
-    <div class="label">Coût du mois {{ costs.month if costs }}</div>
+    <div class="label">Coût du mois</div>
     {% if costs %}
-      <div class="value">{{ '%.4f'|format(costs.total) }} €</div>
-      <div class="hint">budget {{ costs.budget }} € · entraînement {{ '%.4f'|format(costs.training) }} € · API {{ '%.4f'|format(costs.serving) }} €</div>
+      <div class="value">{{ '%.2f'|format(costs.total) }} €</div>
+      <div class="hint">sur {{ costs.budget }} € de budget</div>
       <div class="bar {{ 'bad' if costs.share >= 1 else ('warn' if costs.share >= 0.8) }}"><span style="width: {{ [costs.share * 100, 100]|min }}%"></span></div>
     {% else %}<div class="value">—</div><div class="hint">aucun coût enregistré</div>{% endif %}
   </div>
@@ -43,9 +54,29 @@
     <div class="hint">{% for t in open_incidents[:2] %}<a href="/parcours/{{ t.id }}">{{ t.title }}</a>{{ ', ' if not loop.last }}{% else %}tout va bien{% endfor %}</div>
   </div>
   <div class="kpi">
-    <div class="label">Validations humaines</div>
+    <div class="label">À valider</div>
     <div class="value">{{ questions|length }}</div>
-    <div class="hint">{% if in_progress %}{{ in_progress|length }} demande(s) en cours dans LangGraph{% else %}aucune demande en cours{% endif %}</div>
+    <div class="hint">{% if in_progress %}{{ in_progress|length }} demande(s) en cours{% else %}rien en attente{% endif %}</div>
+  </div>
+</div>
+
+<div id="decisions" data-live class="panel decide">
+  {% set d = decisions %}
+  <div class="decide-head">
+    <h2>Qui a décidé ? <span class="muted">· {{ d.total }} décisions en {{ d.hours|int }} h</span></h2>
+    {% if d.guards %}<span class="guard" title="propositions du LLM écartées par une règle du code ou par le juge">🛡 {{ d.guards }} propositions du LLM écartées</span>{% endif %}
+  </div>
+  <div class="split" role="img" aria-label="Répartition des décisions">
+    {% for p in d.parts if p.count %}<span class="o-{{ p.key }}" style="flex: {{ p.count }}"></span>{% endfor %}
+  </div>
+  <div class="grid origins">
+    {% for p in d.parts %}
+    <div class="origin o-{{ p.key }}">
+      <div class="o-num">{{ p.count }}<small>{{ (p.share * 100)|round|int }} %</small></div>
+      <div class="o-label">{{ p.label }}</div>
+      {% if p.latest %}<div class="o-last" title="{{ p.latest.summary }}">{{ p.latest.summary }}</div>{% endif %}
+    </div>
+    {% endfor %}
   </div>
 </div>
 
@@ -59,19 +90,19 @@
 </div>
 
 <div class="panel">
-  <h2>Carte de la pipeline</h2>
+  <h2>Les agents en direct <span class="muted">· les liens s'animent quand un agent agit</span></h2>
   <div id="map" data-live class="map scroll">
     {% set c = cards %}
-    <svg viewBox="0 0 960 370" role="img" aria-label="Agents et événements échangés">
+    <svg viewBox="0 0 960 370" role="img" aria-label="Agents et événements échangés" class="{% for k in hot %}hot-{{ k }} {% endfor %}">
       <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
-      <path class="edge" d="M240,72 C300,80 320,150 368,165"/><text class="edge-label" x="252" y="112">drift_detected</text>
-      <path class="edge" d="M590,152 C640,140 660,80 718,70"/><text class="edge-label" x="628" y="100">cost_estimate</text>
-      <path class="edge" d="M718,92 C670,100 650,170 592,172"/><text class="edge-label" x="652" y="150">cost_estimated</text>
-      <path class="edge" d="M590,198 C650,210 660,270 718,276"/><text class="edge-label" x="600" y="250">retrain_requested</text>
-      <path class="edge" d="M718,300 C640,300 620,226 592,214"/><text class="edge-label" x="600" y="352">model_promoted / blocked</text>
-      <path class="edge" d="M240,290 C300,280 320,215 368,204"/><text class="edge-label" x="206" y="240">incident_opened / resolved</text>
-      <path class="edge" d="M468,218 L468,286"/><text class="edge-label" x="380" y="258">question</text>
-      <path class="edge" d="M500,286 L500,218"/><text class="edge-label" x="508" y="258">approval_given</text>
+      <path class="edge e-quality" d="M240,72 C300,80 320,150 368,165"/><text class="edge-label" x="252" y="112">drift_detected</text>
+      <path class="edge e-cost" d="M590,152 C640,140 660,80 718,70"/><text class="edge-label" x="628" y="100">cost_estimate</text>
+      <path class="edge e-cost" d="M718,92 C670,100 650,170 592,172"/><text class="edge-label" x="652" y="150">cost_estimated</text>
+      <path class="edge e-retrain" d="M590,198 C650,210 660,270 718,276"/><text class="edge-label" x="600" y="250">retrain_requested</text>
+      <path class="edge e-retrain" d="M718,300 C640,300 620,226 592,214"/><text class="edge-label" x="600" y="352">model_promoted / blocked</text>
+      <path class="edge e-reliability" d="M240,290 C300,280 320,215 368,204"/><text class="edge-label" x="206" y="240">incident_opened / resolved</text>
+      <path class="edge e-human" d="M468,218 L468,286"/><text class="edge-label" x="380" y="258">question</text>
+      <path class="edge e-human" d="M500,286 L500,218"/><text class="edge-label" x="508" y="258">approval_given</text>
       {{ m.node(c.quality, 20, 34) }}
       {{ m.node(c.reliability, 20, 254) }}
       {{ m.node(c.orchestrator, 370, 142) }}
@@ -115,11 +146,11 @@
       </div>
     </div>
     <div class="panel">
-      <h2>Messages à l'humain</h2>
+      <h2>Derniers messages</h2>
       <div id="messages" data-live>
-        {% for n in messages %}
+        {% for n in messages[:5] %}
           <div class="msg"><div class="time"><span data-ts="{{ n.timestamp|iso }}"></span>
-            {% if n.request_id %} · <a href="/parcours/{{ n.request_id }}">parcours {{ n.request_id }}</a>{% endif %}</div>{{ n.text }}</div>
+            {% if n.request_id %} · <a href="/parcours/{{ n.request_id }}">parcours {{ n.request_id }}</a>{% endif %}</div><div class="clamp">{{ n.text }}</div></div>
         {% else %}<p class="empty">Aucun message pour l'instant.</p>{% endfor %}
       </div>
     </div>

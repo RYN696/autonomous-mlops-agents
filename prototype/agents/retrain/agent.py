@@ -31,6 +31,7 @@ from sklearn.metrics import root_mean_squared_error
 from common import config
 from agents.retrain.explain import explain_decision
 from agents.retrain.notify import show_message
+from agents.retrain.report import build_report
 from agents.retrain.tuning import tune
 from common.action_log import ActionLog
 from common.events import Event, EventBus, EventType, Severity
@@ -131,6 +132,7 @@ class RetrainAgent:
                 skipped = {"action": "retrain_skipped", "reason": reason, "period": period, **who}
                 self.log.record(AGENT, "retrain_skipped", event.model, skipped)
                 self.publish(EventType.ACTION_LOGGED, Severity.INFO, skipped)
+                self.report("skipped", skipped)
                 return {"decision": "skipped", "reason": reason}
 
             started = {**who, "period": period}
@@ -155,6 +157,7 @@ class RetrainAgent:
         except Exception as exc:  # l'agent doit continuer à écouter même si un entraînement échoue
             self.log.record(AGENT, "retrain_failed", event.model, {**who, "error": str(exc)})
             self.publish(EventType.INCIDENT_OPENED, Severity.CRITICAL, {**who, "error": str(exc)})
+            self.report("failed", {**who, "error": str(exc), "period": locals().get("period")})
             return {"decision": "failed", "error": str(exc)}
 
         registered = {
@@ -169,7 +172,13 @@ class RetrainAgent:
         self.log.record(AGENT, "challenger_registered", event.model, registered)
         self.publish(EventType.MODEL_REGISTERED, Severity.INFO, registered)
 
-        return self.compare_and_decide(challenger, df_test, {**who, "period": period, "params": params})
+        result = self.compare_and_decide(challenger, df_test, {**who, "period": period, "params": params})
+        test_y, test_m = training.next_month(*months[-1])
+        self.report(result["decision"], {**result, "training_seconds": challenger["training_seconds"],
+                                         "tuning_seconds": tuning_seconds, "tuning_trials": self.tuning_trials,
+                                         "rows_train": len(df_train), "rows_test": len(df_test),
+                                         "test_month": f"{test_y}-{test_m:02d}", "data_file": received})
+        return result
 
     def compare_and_decide(self, challenger: dict, df_test: pd.DataFrame, who: dict) -> dict[str, Any]:
         client = MlflowClient(config.MLFLOW_TRACKING_URI)
@@ -209,6 +218,13 @@ class RetrainAgent:
         self.log.record(AGENT, "promotion_blocked", config.MODEL_NAME, result)
         self.publish(EventType.PROMOTION_BLOCKED, Severity.WARNING, result)
         return {"decision": "blocked", **result}
+    def report(self, decision: str, facts: dict) -> None:
+        """Rapport de fin de mission (écrit par le code) : un rapport raté ne doit pas casser l'agent."""
+        try:
+            self.log.record(AGENT, "retrain_report", config.MODEL_NAME, build_report(decision, facts))
+        except Exception as exc:
+            print(f"Rapport non écrit : {exc}")
+
     def tell_humans(self, decision: str, result: dict) -> None:
         """Ajoute au résultat un message lisible (LLM ou code), puis l'affiche."""
         result["message"], result["message_source"] = self.explain(decision, result)

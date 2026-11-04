@@ -23,6 +23,35 @@
   </g>
 {% endmacro %}
 
+{# Rapport de fin de mission d'un agent (Qualité, Retrain) : chiffres clés, sections, suite #}
+{% macro report_card(d, ts=None, info=None, open=False) %}
+  <article class="panel report r-{{ d.level }} {{ info.color if info }}">
+    <header class="report-head">
+      {% if info %}{{ chip(info) }}{% endif %}
+      <h2>{{ d.title }}</h2>
+      <span class="badge l-{{ d.level }}">{{ d.verdict }}</span>
+      {% if ts %}<span class="muted report-ts"><span data-ts="{{ ts|iso }}"></span></span>{% endif %}
+    </header>
+    {% if d.headline %}
+    <div class="report-kpis">
+      {% for h in d.headline %}
+        <div class="rk {{ 'alert' if h.alert }}"><div class="rk-label">{{ h.label }}</div><div class="rk-value">{{ h.value }}</div>
+          {% if h.hint %}<div class="rk-hint">{{ h.hint }}</div>{% endif %}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if d.summary %}<p class="report-summary">{{ d.summary }}
+      <span class="badge {{ 'l-run' if d.summary_source == 'llm' else 'l-muted' }}">{{ 'LLM vérifié' if d.summary_source == 'llm' else 'texte du code' }}</span></p>{% endif %}
+    <details class="report-more" {{ 'open' if open }}><summary>Détail du rapport</summary>
+      <div class="report-sections">
+        {% for s in d.sections %}<section><h3>{{ s.title }}</h3><ul>{% for l in s.lines %}<li>{{ l }}</li>{% endfor %}</ul></section>{% endfor %}
+      </div>
+      {% if d.llm_note %}<p class="muted"><b>Explication du LLM</b> ({{ d.llm_model }}, nombres vérifiés) : {{ d.llm_note }}</p>{% endif %}
+    </details>
+    <p class="report-next">→ {{ d.next }}{% if d.request_id %} · <a href="/parcours/{{ d.request_id }}">parcours</a>{% endif %}</p>
+  </article>
+{% endmacro %}
+
 {% macro question(n, next=None) %}
   <div class="question">
     <p>{{ n.text }}</p>

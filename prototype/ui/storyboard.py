@@ -43,6 +43,18 @@ class Case:
     check: Callable[["Ctx"], tuple[str, str] | None]  # (état, ce qui s'est vraiment passé) ou None : pas encore
 
 
+# Personnage de chaque case : icône et couleur (celle de l'agent, ou celle des humains)
+ACTORS = {
+    "API": ("🚕", "a-other"), "Agent Qualité": ("🔍", "a-quality"), "Orchestrateur": ("🧭", "a-orchestrator"),
+    "Agent Retrain": ("🏋", "a-retrain"), "Agent Fiabilité": ("🛟", "a-reliability"), "Agent Coûts": ("💶", "a-cost"),
+    "Data scientist": ("🧑‍💻", "a-human"), "Ingénieur ML": ("🧑‍🔧", "a-human"), "Responsable": ("🧑‍💼", "a-human"),
+}
+
+
+def actor_icon(actor: str) -> tuple[str, str]:
+    return ACTORS.get(actor, ("•", "a-other"))
+
+
 @dataclass(frozen=True)
 class Story:
     key: str

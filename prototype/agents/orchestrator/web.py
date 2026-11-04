@@ -30,13 +30,17 @@ from agents.cost import report as cost_report
 from agents.orchestrator.human import HumanActionError, HumanActions
 from common import budget as live_budget
 from common import config
-from ui import data_preview
+from ui import cost_charts, data_preview
 from ui import traces as tr
 from ui.catalog import AGENTS, BY_KEY, agent_of
+from ui.decisions import who_decides
 from ui.scenarios import SCENARIOS, ScenarioRunner
 from ui.status import PipelineStatus
-from ui.storyboard import STORIES, StoryBoard
+from ui.storyboard import STORIES, StoryBoard, actor_icon
 from ui.summaries import summarize
+
+HOT_SECONDS = 120  # vue d'ensemble : un agent qui a agi depuis moins de 2 min est « actif »
+ROUTINE = {"cost_recorded", "quality_ok", "llm_decision"}  # mesures de fond : n'animent pas la carte
 
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 
@@ -60,7 +64,8 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
     @app.context_processor
     def common_values():
         return {"agents": AGENTS, "has_graph": orchestrator is not None,
-                "pending_count": len(notifier.pending()), "path": request.path}
+                "pending_count": len(notifier.pending()), "path": request.path,
+                "actor_icon": actor_icon}
 
     @app.template_filter("iso")
     def iso(ts: datetime | None) -> str:
@@ -95,7 +100,13 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
                  for a in AGENTS]
         recent = tr.recent_traces(log.engine, limit=8)
         incidents = [t for t in tr.recent_traces(log.engine, limit=50, kind=tr.INCIDENT) if t.level in ("run", "wait")]
+        now = datetime.now(timezone.utc)
+        # agents actifs dans les 2 dernières minutes : la carte anime leurs liens
+        hot = [c["info"].key for c in cards
+               if c.get("last") and c["last"]["action"] not in ROUTINE
+               and (now - c["last"]["ts"]).total_seconds() < HOT_SECONDS]
         return render_template("overview.html", cards={c["info"].key: c for c in cards}, services=services(),
+                               decisions=who_decides(log.engine), hot=hot,
                                production=status.production(), costs=status.month_cost(),
                                questions=notifier.pending(), messages=notifier.latest(12), recent=recent,
                                open_incidents=incidents, in_progress=in_progress(),
@@ -185,6 +196,22 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
         finally:
             report_job["running"] = False
 
+    @app.get("/rapports")
+    def reports():
+        """Rapports de fin de mission des agents Qualité et Retrain (écrits par le code)."""
+        which = request.args.get("agent") or None
+        alerts = request.args.get("tous") is None   # par défaut : sans les contrôles « conformes »
+        rows = []
+        for agent, action in (("agent_retrain", "retrain_report"), ("agent_qualite", "quality_report")):
+            if which and which != agent:
+                continue
+            for r in tr.journal(log.engine, agent=agent, action=action, limit=60):
+                if alerts and r["details"].get("level") == "ok" and action == "quality_report":
+                    continue
+                rows.append(r)
+        rows.sort(key=lambda r: r["timestamp"], reverse=True)
+        return render_template("reports.html", rows=rows[:30], which=which, alerts=alerts)
+
     @app.get("/couts")
     def costs():
         reports = tr.journal(log.engine, agent=cost_report.AGENT, action="cost_report", limit=6)
@@ -192,7 +219,11 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
             live = cost_report.figures(log.engine)
         except Exception:
             live = None
-        return render_template("costs.html", reports=reports, live=live, job=report_job,
+        try:
+            charts = cost_charts.charts(log.engine, live["budget"], live["projection"]) if live else None
+        except Exception:                      # un graphique en erreur ne casse pas la page
+            charts = None
+        return render_template("costs.html", reports=reports, live=live, job=report_job, charts=charts,
                                model=config.COST_LLM_MODEL)
 
     @app.post("/couts/rapport")
@@ -220,12 +251,7 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
     @app.get("/storyboard")
     def storyboard():
         runs = [{"run": r, "progress": board.progress(r), "finished": board.finished(r)} for r in board.runs]
-        last = tr.journal(log.engine, agent="agent_retrain", action="retrain_started", limit=1)
-        pause = None  # Retrain ignore un retrain automatique pendant RETRAIN_COOLDOWN_MINUTES après le précédent
-        if last:
-            left = config.RETRAIN_COOLDOWN_MINUTES - (datetime.now(timezone.utc) - last[0]["timestamp"]).total_seconds() / 60
-            pause = int(left) + 1 if left > 0 else None
-        return render_template("storyboard.html", stories=STORIES, runs=runs, board=board, pause=pause,
+        return render_template("storyboard.html", stories=STORIES, runs=runs, board=board,
                                trained=tr.trained_months(log.engine), budget=budget_info())
 
     @app.post("/storyboard/run")

@@ -67,9 +67,10 @@
         {% endif %}
       </div>
       <div class="case-body">
-        <div class="case-meta">Case {{ p.n }} · {{ c.clock }}</div>
+        {% set icon, tone = actor_icon(c.actor) %}
+        <div class="case-meta"><span class="num-sm {{ tone }}">{{ p.n }}</span> {{ c.clock }}</div>
         <h3>{{ c.title }}</h3>
-        <div class="speech"><span>Speech</span>{{ c.speech }}</div>
+        <details class="speech"><summary>Le storyboard</summary>{{ c.speech }}</details>
       </div>
     </article>
   {% endfor %}

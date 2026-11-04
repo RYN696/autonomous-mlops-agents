@@ -2,9 +2,7 @@
 {% block title %}Rapport de coûts{% endblock %}
 {% block content %}
 <h1>Rapport de coûts</h1>
-<p class="sub">Les chiffres et les verdicts sont calculés par l'agent Coûts. Le LLM ({{ model }}) ne fait que les
-  expliquer ; s'il cite un nombre qui n'est pas dans les constats, son texte est écarté et remplacé par celui du code.
-  Chaque rapport est écrit au journal et envoyé sur Discord s'il est configuré.</p>
+<p class="sub">Chiffres calculés par l'agent Coûts · le LLM ({{ model }}) ne fait que les expliquer.</p>
 
 <div id="cost-live" data-live>
   {% if job.error %}<div class="panel notice">Le dernier rapport a échoué : {{ job.error }}</div>{% endif %}
@@ -26,9 +24,70 @@
   </div>
   {% endif %}
 
+  {% if charts %}{% set g = charts %}
+  <div class="grid charts">
+    <figure class="panel chart wide">
+      <figcaption><h2>Dépense cumulée du mois</h2>
+        <span class="legend"><i class="sw s-train"></i>dépense <i class="sw dash"></i>budget <i class="sw dots"></i>projection</span></figcaption>
+      {% set c = g.cumul %}
+      <svg viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="Dépense cumulée du mois, budget et projection">
+        {% for t in c.ticks %}<line class="grid-line" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+          <text class="tick" x="{{ g.pad.l - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ '%.2f'|format(t.v) if c.top < 10 else '%.0f'|format(t.v) }} €</text>{% endfor %}
+        {% for l in c.x_labels %}<text class="tick" x="{{ l.x }}" y="{{ c.h - 8 }}" text-anchor="middle">{{ l.day }}</text>{% endfor %}
+        {% if c.budget_y is not none %}<line class="budget-line" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ c.budget_y }}" y2="{{ c.budget_y }}"/>
+          <text class="ref-label" x="{{ g.pad.l + 6 }}" y="{{ c.budget_y - 6 }}">budget {{ '%.0f'|format(c.budget) }} €</text>{% endif %}
+        {% if c.projection %}{% set p = c.projection %}<line class="proj-line" x1="{{ p.x1 }}" y1="{{ p.y1 }}" x2="{{ p.x2 }}" y2="{{ p.y2 }}"/>
+          <text class="ref-label" x="{{ p.x2 }}" y="{{ p.y2 - 8 }}" text-anchor="end">projection {{ '%.2f'|format(p.value) }} €</text>{% endif %}
+        <polyline class="spend-line" points="{{ c.line }}"/>
+        {% if c.points %}{% set last = c.points[-1] %}<circle class="spend-dot" cx="{{ last.x }}" cy="{{ last.y }}" r="5"/>
+          <text class="ref-label strong" x="{{ last.x + 10 }}" y="{{ last.y - 8 }}">{{ '%.2f'|format(last.value) }} €</text>{% endif %}
+        {% for p in c.points %}<circle class="hit" cx="{{ p.x }}" cy="{{ p.y }}" r="10" data-tip="{{ p.day }} · {{ '%.4f'|format(p.value) }} € cumulés"/>{% endfor %}
+      </svg>
+    </figure>
+
+    <figure class="panel chart">
+      <figcaption><h2>Dépense par jour</h2>
+        <span class="legend"><i class="sw s-train"></i>entraînement <i class="sw s-serve"></i>API servie</span></figcaption>
+      {% set c = g.daily %}
+      <svg viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="Dépense par jour, entraînement et API servie">
+        {% for t in c.ticks %}<line class="grid-line" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+          <text class="tick" x="{{ g.pad.l - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ '%.2f'|format(t.v) }} €</text>{% endfor %}
+        {% for l in c.x_labels %}<text class="tick" x="{{ l.x }}" y="{{ c.h - 8 }}" text-anchor="middle">{{ l.day }}</text>{% endfor %}
+        {% for b in c.bars if not b.future and (b.training or b.serving) %}
+          <g class="bar-hit" data-tip="{{ b.day }} · entraînement {{ '%.4f'|format(b.training) }} € · API {{ '%.4f'|format(b.serving) }} €">
+            <rect class="hitbox" x="{{ b.x - 2 }}" y="{{ g.pad.t }}" width="{{ b.w + 4 }}" height="{{ c.base - g.pad.t }}"/>
+            {% if b.serving %}<rect class="s-serve" x="{{ b.x }}" y="{{ b.y_sv }}" width="{{ b.w }}" height="{{ b.h_sv }}" rx="2"/>{% endif %}
+            {% if b.training %}<rect class="s-train" x="{{ b.x }}" y="{{ b.y_tr }}" width="{{ b.w }}" height="{{ b.h_tr }}" rx="2"/>{% endif %}
+          </g>
+        {% endfor %}
+        <line class="axis" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ c.base }}" y2="{{ c.base }}"/>
+      </svg>
+    </figure>
+
+    <figure class="panel chart">
+      <figcaption><h2>Coût de chaque entraînement</h2>
+        <span class="legend"><i class="sw s-train"></i>normal <i class="sw s-spike"></i>pic ▲</span></figcaption>
+      {% set c = g.trainings %}
+      <svg viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="Coût de chaque entraînement du mois">
+        {% for t in c.ticks %}<line class="grid-line" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+          <text class="tick" x="{{ g.pad.l - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ '%.2f'|format(t.v) }} €</text>{% endfor %}
+        {% for b in c.bars %}
+          <g class="bar-hit" data-tip="{{ '%.4f'|format(b.cost) }} € · {{ '%.0f'|format(b.cpu) }} s de CPU{% if b.spike %} · pic ×{{ b.ratio }}{% endif %}{% if b.request_id %} · {{ b.request_id }}{% endif %}">
+            <rect class="hitbox" x="{{ b.x - 2 }}" y="{{ g.pad.t }}" width="{{ b.w + 4 }}" height="{{ c.base - g.pad.t }}"/>
+            <rect class="{{ 's-spike' if b.spike else 's-train' }}" x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ [b.h, 1]|max }}" rx="2"/>
+            {% if b.spike %}<text class="spike-mark" x="{{ b.x + b.w / 2 }}" y="{{ b.y - 5 }}" text-anchor="middle">▲</text>{% endif %}
+          </g>
+        {% else %}<text class="tick" x="{{ c.w / 2 }}" y="{{ c.h / 2 }}" text-anchor="middle">aucun entraînement ce mois</text>
+        {% endfor %}
+        <line class="axis" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ c.base }}" y2="{{ c.base }}"/>
+      </svg>
+    </figure>
+  </div>
+  {% endif %}
+
   <form class="panel" method="post" action="/couts/rapport">
     <button class="go" {{ 'disabled' if job.running }}>{{ 'Rapport en cours… (le LLM rédige)' if job.running else 'Générer le rapport du mois' }}</button>
-    <span class="muted">15 s à 2 min selon la charge d'Ollama.</span>
+    <span class="muted">15 s à 2 min</span>
   </form>
 
   {% for r in reports %}{% set d = r.details %}

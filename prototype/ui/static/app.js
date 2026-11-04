@@ -65,6 +65,20 @@
     }
   }
 
+  // Infobulle des graphiques : tout élément [data-tip] (délégation : survit au rafraîchissement)
+  const tip = document.createElement("div");
+  tip.className = "tip";
+  tip.hidden = true;
+  document.body.appendChild(tip);
+  document.addEventListener("pointermove", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip]");
+    if (!el) { tip.hidden = true; return; }
+    tip.textContent = el.dataset.tip;
+    tip.hidden = false;
+    tip.style.left = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = (e.clientY + 14) + "px";
+  });
+
   paintTimes(document);
   wireWho(document);
   setInterval(refresh, 5000);

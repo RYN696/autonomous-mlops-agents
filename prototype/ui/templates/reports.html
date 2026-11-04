@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Rapports des agents{% endblock %}
+{% block content %}
+<h1>Rapports des agents</h1>
+<p class="sub">À la fin de chaque mission, Qualité et Retrain rédigent leur rapport. Chiffres écrits par le code.</p>
+
+<div class="tabs">
+  <a href="/rapports{{ '' if alerts else '?tous=1' }}" class="{{ 'on' if not which }}">Tous</a>
+  <a href="/rapports?agent=agent_retrain{{ '' if alerts else '&tous=1' }}" class="{{ 'on' if which == 'agent_retrain' }}">Retrain</a>
+  <a href="/rapports?agent=agent_qualite{{ '' if alerts else '&tous=1' }}" class="{{ 'on' if which == 'agent_qualite' }}">Qualité</a>
+  <a class="muted" style="margin-left:auto" href="/rapports?{{ 'agent=' ~ which ~ '&' if which }}{{ 'tous=1' if alerts }}">
+    {{ 'montrer aussi les contrôles conformes' if alerts else 'masquer les contrôles conformes' }}</a>
+</div>
+
+<div id="reports" data-live>
+  {% for r in rows %}{{ m.report_card(r.details, r.timestamp, r.info) }}
+  {% else %}<p class="empty">Aucun rapport pour l'instant : il en apparaît un à la fin de chaque contrôle Qualité ou entraînement.</p>{% endfor %}
+</div>
+{% endblock %}

@@ -23,6 +23,7 @@ from agents.quality.validation import validate_current_data
 from common import config
 from pipeline.data import DATA_DIR, clean as clean_rides, read_dataframe
 from agents.quality.explain import add_explanation
+from agents.quality.report import build_report
 from agents.quality.rootcause import analyze_shift
 
 
@@ -126,7 +127,11 @@ def check_once(args) -> None:
 
     from common.action_log import ActionLog
     from common.events import EventBus
-    publish_quality_result(event, EventBus(), ActionLog())
+    log = ActionLog()
+    publish_quality_result(event, EventBus(), log)
+    # rapport de fin de contrôle : écrit par le code, relié au parcours par le check_id
+    log.record(agent="agent_qualite", action="quality_report", model=event.model,
+               details=build_report(event.type.value, event.payload))
     print(f"Publié : {event.type.value} ({event.severity.value}) reason={event.payload.get('reason')} "
           f"check_id={event.payload['check_id']}")
 

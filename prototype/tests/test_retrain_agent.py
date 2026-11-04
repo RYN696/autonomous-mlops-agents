@@ -69,7 +69,12 @@ def test_better_challenger_is_promoted_and_old_version_kept(make_agent):
     assert "production" in aliases(second["challenger_version"])
     assert "previous" in aliases(first["challenger_version"])  # pour un rollback
     assert [e.type for e in agent.bus.events][-2:] == [EventType.MODEL_REGISTERED, EventType.MODEL_PROMOTED]
-    assert agent.log.latest()[0]["action"] == "model_promoted"
+    # dernière action : le rapport de fin de mission, juste après la décision
+    last, decision = agent.log.latest()[:2]
+    assert (last["action"], decision["action"]) == ("retrain_report", "model_promoted")
+    assert last["details"]["title"].startswith("Modèle promu") and last["details"]["level"] == "ok"
+    assert last["details"]["headline"][0]["value"] == f"v{second['challenger_version']}"
+    assert last["details"]["request_id"] is None or isinstance(last["details"]["request_id"], str)
 
 
 def test_worse_challenger_is_blocked_and_production_unchanged(make_agent):
@@ -105,7 +110,9 @@ def test_duplicates_and_cooldown_are_skipped(make_agent):
 
     assert agent.handle(request("2023-01"))["decision"] == "skipped"  # même période
     assert agent.handle(request("2023-02"))["decision"] == "skipped"  # moins de 60 min
-    assert agent.log.latest()[0]["action"] == "retrain_skipped"
+    last, skipped = agent.log.latest()[:2]
+    assert (last["action"], skipped["action"]) == ("retrain_report", "retrain_skipped")
+    assert last["details"]["title"].startswith("Réentraînement ignoré")
 
     validated = agent.handle(request("2023-02", approved_by="responsable"))  # validé par un humain
     assert validated["decision"] != "skipped"

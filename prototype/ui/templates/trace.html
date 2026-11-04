@@ -17,6 +17,10 @@
     <div style="margin-top:14px">{{ m.question(s.details, next='/parcours/' ~ t.id) }}</div>
   {% endfor %}
 
+  {% for s in t.steps if s.action == 'retrain_report' %}
+    <div style="margin-top:16px">{{ m.report_card(s.details, s.ts, s.agent, open=True) }}</div>
+  {% endfor %}
+
   <div class="panel" style="margin-top:16px">
     <ol class="timeline">
     {% for s in t.steps %}

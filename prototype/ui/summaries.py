@@ -132,6 +132,13 @@ SUMMARIES: dict[str, Callable[[dict], str]] = {
                                  f"par {d.get('by')} : {d.get('reload')}"),
     "alert_ignored": lambda d: f"Alerte ignorée par {d.get('by')}",
     # Coûts
+    # Chat
+    "chat_received": lambda d: f"Message de {d.get('by')} : « {d.get('text')} »",
+    "chat_understood": lambda d: (f"Commande non lancée : {d['problem']}" if d.get("problem") else
+                                  f"Commande comprise : réentraîner sur {d.get('period_label')} (demandé par {d.get('by')})"),
+    # Rapports de fin de mission
+    "quality_report": lambda d: f"Rapport Qualité : {d.get('title')} — {d.get('verdict')}",
+    "retrain_report": lambda d: f"Rapport Retrain : {d.get('title')} — {d.get('verdict')}",
     "cost_estimated": _cost_estimated,
     "budget_exceeded": lambda d: (f"Budget dépassé de {_num(d.get('over_by'), '.4f')} € — "
                                   f"suggestion : {d.get('suggested_action')}"),

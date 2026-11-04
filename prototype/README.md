@@ -81,15 +81,23 @@ curl -X POST http://localhost:9696/predict -H "Content-Type: application/json" -
 
 L'interface (servie par l'orchestrateur, code dans `ui/`) se met à jour toute seule toutes les 5 s :
 
-- **Vue d'ensemble** : modèle en production, coût du mois, incidents ouverts, questions à valider,
-  carte des agents (état du conteneur, dernière action) et services.
+- **Vue d'ensemble** : un feu tricolore résume l'état (vert : tout roule, orange : une décision humaine
+  attend, rouge : incident ouvert). « Qui a décidé ? » compte les décisions des dernières 24 h par
+  origine (règle du code, LLM validé, humain) et les propositions du LLM écartées par les garde-fous
+  (`ui/decisions.py`). Sur la carte, les liens d'un agent qui vient d'agir s'animent.
 - **Parcours** : chaque dérive ou incident suivi de bout en bout. Les agents se passent un identifiant
   (`check_id` du contrôle Qualité, puis `request_id` de l'orchestrateur repris par Coûts et Retrain,
   ou `incident_id` de Fiabilité), ce qui permet d'afficher la chronologie complète, agent par agent,
   avec le détail JSON de chaque étape et les messages envoyés à l'humain.
 - **Agents** : rôle, événements écoutés et publiés, dernières actions filtrables.
 - **Journal d'actions** : tout le journal, filtrable par agent, action ou texte.
-- **Rapport de coûts** : dépense du mois (entraînement, API), budget, projection de fin de mois.
+- **Rapports des agents** : à la fin de chaque mission, Qualité (`agents/quality/report.py`, action
+  `quality_report`) et Retrain (`agents/retrain/report.py`, action `retrain_report`) écrivent un rapport :
+  chiffres clés, données, dérive ou optimisation Optuna, décision et suite. Tout est écrit par le code ;
+  le message du LLM est joint en résumé. Le rapport Retrain apparaît aussi sur la page du parcours.
+- **Rapport de coûts** : dépense du mois (entraînement, API), budget, projection de fin de mois,
+  avec trois graphiques (`ui/cost_charts.py`) : dépense cumulée face au budget et à la projection,
+  dépense par jour (entraînement / API), coût de chaque entraînement avec les pics marqués.
   Le bouton « Générer le rapport du mois » fait expliquer ces chiffres par un LLM
   (`COST_LLM_MODEL`, `llama3.2:3b` par défaut). Le code calcule tous les chiffres et les verdicts ;
   un texte du LLM qui cite un nombre absent des constats est écarté et remplacé par un texte du code.

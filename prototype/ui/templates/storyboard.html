@@ -2,8 +2,7 @@
 {% block title %}Storyboard{% endblock %}
 {% block content %}
 <h1>Storyboard</h1>
-<p class="sub">Les 4 scénarios imaginés en Design Thinking, joués pour de vrai : « Lancer » prépare la situation,
-  puis ce sont les agents qui réagissent seuls. Chaque case se coche avec ce qui s'est réellement passé.</p>
+<p class="sub">4 scénarios du Design Thinking, joués en vrai. Vous lancez, les agents réagissent seuls.</p>
 
 {% with messages = get_flashed_messages() %}
   {% for msg in messages %}<div class="panel notice">{{ msg }}</div>{% endfor %}
@@ -22,13 +21,10 @@
       <h2>{{ s.title }}</h2>
     </div>
     <div class="objs">{% for o in s.objectives %}<span class="obj">{{ o }}</span>{% endfor %}</div>
-    <p>{{ s.summary }}</p>
-    {% if s.key == 'derive' and pause %}
-      <p class="notice-inline">Retrain est en pause encore {{ pause }} min après le dernier entraînement
-        (<code>RETRAIN_COOLDOWN_MINUTES</code>) : lancé maintenant, ce scénario finira en « ignoré par Retrain ».</p>
-    {% endif %}
-    <ol class="case-list">
-      {% for c in s.cases %}<li><span class="mono muted">{{ c.clock }}</span> {{ c.title }}</li>{% endfor %}
+    <ol class="strip" title="{{ s.summary }}">
+      {% for c in s.cases %}{% set icon, tone = actor_icon(c.actor) %}
+        <li class="{{ tone }}" title="{{ c.clock }} · {{ c.title }}"><span class="cap">{{ c.title }}</span></li>
+      {% endfor %}
     </ol>
     <div class="scen-actions">
       {% if 'month' in s.params %}
@@ -80,8 +76,6 @@
         {% if budget.spent is not none %} · déjà dépensé {{ '%.4f'|format(budget.spent) }} €{% endif %}<br>
         <span class="muted">{% if budget.live is not none %}réglé en direct, lu par l'agent Coûts à chaque estimation{% else %}budget de configuration de l'agent Coûts (MONTHLY_BUDGET){% endif %}</span></p>
     </div>
-    <p class="muted">Les scénarios 1 et 4 le règlent large (retrain automatique) ; le scénario 3 le règle juste
-      au-dessus de la dépense du mois (un mois de données passe, trois non).</p>
     <div class="scen-actions">
       <input name="budget" inputmode="decimal" placeholder="ex. 20" size="8" aria-label="Budget en euros">
       <input type="hidden" name="who">
