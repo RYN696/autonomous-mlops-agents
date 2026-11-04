@@ -828,7 +828,7 @@
           "editorMode": "code",
           "rawQuery": true,
           "format": "table",
-          "rawSql": "SELECT r.timestamp AS \"Clôture\", r.details->>'incident_id' AS \"Incident\", r.details->>'cause' AS \"Cause\", r.details->>'level' AS \"Niveau\", (r.details->>'score')::int AS \"Score\", (r.details->>'duration_seconds')::float AS \"Durée\", (SELECT string_agg(a->>'action', ' → ') FROM json_array_elements(r.details->'actions') a) AS \"Actions\", r.details->>'degraded' AS \"Mode dégradé\" FROM action_log r WHERE r.agent='agent_fiabilite' AND r.action='incident_resolved' AND $__timeFilter(r.timestamp) ORDER BY r.timestamp DESC LIMIT 20"
+          "rawSql": "SELECT r.timestamp AS \"Clôture\", r.details->>'incident_id' AS \"Incident\", r.details->>'cause' AS \"Cause\", r.details->>'level' AS \"Niveau\", (r.details->'judge'->>'score')::int AS \"Score\", (r.details->>'duration_seconds')::float AS \"Durée\", (SELECT string_agg(a->>'action', ' → ') FROM json_array_elements(r.details->'actions') a) AS \"Actions\", r.details->>'degraded' AS \"Mode dégradé\" FROM action_log r WHERE r.agent='agent_fiabilite' AND r.action='incident_resolved' AND $__timeFilter(r.timestamp) ORDER BY r.timestamp DESC LIMIT 20"
         }
       ],
       "fieldConfig": {
