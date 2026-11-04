@@ -29,7 +29,8 @@ MAX_LATENCY_SECONDS = float(os.getenv("MAX_LATENCY_SECONDS", "1.0"))
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")  # vide = message écrit par le code, sans LLM
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
 LLM_API_URL = os.getenv("LLM_API_URL", "https://api.groq.com/openai/v1/chat/completions")
-LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+# nom distinct de LLM_TIMEOUT_SECONDS (Ollama, agent Fiabilité, 120 s) : sinon l'un écrase l'autre
+RETRAIN_LLM_TIMEOUT_SECONDS = float(os.getenv("RETRAIN_LLM_TIMEOUT_SECONDS", "30"))
 # Coûts (tarif fictif pour le prototype)
 CPU_HOUR_PRICE = float(os.getenv("CPU_HOUR_PRICE", "0.05"))
 MONTHLY_BUDGET = float(os.getenv("MONTHLY_BUDGET", "20.0"))
@@ -97,6 +98,10 @@ LLM_JUDGE_MODEL = os.getenv("LLM_JUDGE_MODEL", "llama3.2:3b")   # juge : autre f
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))  # 1er chargement d'un modèle : ~30-45 s
 LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "4096"))
 LLM_KEEP_ALIVE = os.getenv("LLM_KEEP_ALIVE", "30m")             # garder le modèle en mémoire GPU
+# LLM qui ne répond plus : nouvel essai après 1 min, puis 2, 4... (max 5 min) au lieu de toutes les 15 s,
+# sinon les requêtes abandonnées s'empilent dans Ollama qui ne rattrape jamais son retard (vu en direct)
+LLM_RETRY_MIN_SECONDS = float(os.getenv("LLM_RETRY_MIN_SECONDS", "60"))
+LLM_RETRY_MAX_SECONDS = float(os.getenv("LLM_RETRY_MAX_SECONDS", "300"))
 LLM_MAX_PROPOSALS = int(os.getenv("LLM_MAX_PROPOSALS", "2"))    # propositions d'action max par cycle (si refus du juge)
 LLM_THINK = os.getenv("LLM_THINK", "off")    # "off" : coupe le mode réflexion (qwen3...) trop lent ; "on" ; "auto" : défaut du modèle
 LLM_TREND_CYCLES = int(os.getenv("LLM_TREND_CYCLES", "8"))      # mesures passées montrées au LLM

@@ -10,4 +10,6 @@ from common.llm import get_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 
-LLMReliabilityAgent(llm=get_client("agent"), judge=Judge(get_client("judge"))).run_forever()
+agent = LLMReliabilityAgent(llm=get_client("agent"), judge=Judge(get_client("judge")))
+agent.close_orphan_incidents()
+agent.run_forever()

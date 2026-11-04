@@ -17,8 +17,7 @@ cd prototype
 
 # 2. Les modèles LLM des agents (une seule fois, ~4 Go)
 ollama pull qwen2.5:3b       # agent Fiabilité : décide
-ollama pull llama3.2:3b      # juge de l'agent Fiabilité
-ollama pull llama3.1:8b      # agent Qualité : explique la dérive (facultatif)
+ollama pull llama3.2:3b      # juge de l'agent Fiabilité, et explication de l'agent Qualité
 
 # 3. Tout lancer
 copy .env.example .env       # macOS / Linux : cp .env.example .env
@@ -91,7 +90,7 @@ L'interface (servie par l'orchestrateur, code dans `ui/`) se met à jour toute s
 - **Journal d'actions** : tout le journal, filtrable par agent, action ou texte.
 
 Qualité et Fiabilité utilisent Ollama, lancé **sur le PC** (`ollama serve`, modèles
-`qwen2.5:3b`, `llama3.2:3b`, `llama3.1:8b`) : les conteneurs le joignent par
+`qwen2.5:3b` et `llama3.2:3b`) : les conteneurs le joignent par
 `host.docker.internal`. Pour jouer des scénarios, voir la section suivante.
 
 ## Tester la pipeline avec l'interface
@@ -120,7 +119,7 @@ Ce que chaque scénario doit montrer (avec la commande équivalente, si on préf
 
 | Scénario | Commande équivalente | Ce qu'on doit voir dans l'interface |
 | --- | --- | --- |
-| Dérive des données | `docker compose exec quality python -m agents.quality --year 2023 --month 3 --scenario drift` | Parcours « Dérive 2023-03 » et une question dans **À valider**. Cliquer **Valider** : Retrain entraîne (~1 min), puis promotion ou promotion bloquée |
+| Dérive des données | `docker compose exec quality python -m agents.quality --year 2023 --month 3 --scenario drift` | Parcours « Dérive 2023-03 » et une question dans **À valider**. Cliquer **Valider** : Retrain optimise les réglages (Optuna) puis entraîne (quelques minutes), puis promotion ou promotion bloquée, avec un message qui l'explique |
 | Refus humain | même commande avec `--month 4`, puis **Refuser** | Parcours « Refusé par un humain », la production ne change pas |
 | Données corrompues | `docker compose exec quality python -m agents.quality --year 2023 --month 2 --scenario corrupted` | Parcours « Données corrompues », aucun réentraînement |
 | Crash de l'API | `python -m scripts.inject_failure crash` | Incident `api_arretee`, Fiabilité redémarre l'API, puis « Résolu en … s » |

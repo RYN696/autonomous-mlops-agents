@@ -88,7 +88,7 @@ def llm_message(decision: str, r: dict) -> str | None:
             config.LLM_API_URL,
             headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
             json=body,
-            timeout=config.LLM_TIMEOUT_SECONDS,
+            timeout=config.RETRAIN_LLM_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         text = response.json()["choices"][0]["message"]["content"].strip()

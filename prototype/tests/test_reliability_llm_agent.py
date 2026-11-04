@@ -361,8 +361,19 @@ def test_without_llm_the_agent_takes_no_decision_and_warns_a_human_once():
     assert len(approvals) == 1 and "LLM indisponible" in approvals[0].payload["reason"]
     assert h.actions.executed == [] and h.agent.incident is None
     h.llm.down = False
-    h.cycle()
+    for _ in range(4):                  # nouvel essai 60 s après la panne (pas à chaque cycle)
+        h.cycle()
     assert any(r["action"] == "llm_recovered" for r in h.log.records)
+
+
+def test_llm_down_retries_are_spaced_out_so_ollama_can_catch_up():
+    """Vu en direct : un appel toutes les 15 s sur un Ollama saturé empilait les requêtes abandonnées."""
+    h = Harness()
+    h.llm.down = True
+    for _ in range(16):                 # 4 minutes de panne
+        h.cycle(ok=0, errors=20)
+    calls = [r for r in h.llm.received]
+    assert len(calls) == 3              # t=15, puis +60 s (t=75), puis +120 s (t=195), au lieu de 16
 
 
 def test_recently_closed_incident_is_shown_to_avoid_reopening():
@@ -554,3 +565,20 @@ def test_two_healthy_measures_close_the_incident_whatever_the_llm_says():
     assert h.agent.incident is None and h.actions.executed == [Action.DEGRADED_MODE]
     resolved = [e for e in h.bus.events if e.type == EventType.INCIDENT_RESOLVED][0].payload
     assert "2 mesures" in resolved["resume"]
+
+
+def test_incident_lost_in_a_restart_is_closed_at_startup(tmp_path):
+    """Vu en direct : agent remplacé pendant un incident -> l'orchestrateur bloquait les retrains 30 min."""
+    from agents.reliability.llm_agent import orphan_incidents
+    from common.action_log import ActionLog
+    log = ActionLog(url=f"sqlite:///{tmp_path / 'log.db'}")
+    log.record("agent_fiabilite", "incident_opened", "m", {"incident_id": "inc-1", "cause": "mlflow_indisponible"})
+    log.record("agent_fiabilite", "incident_opened", "m", {"incident_id": "inc-2", "cause": "surcharge"})
+    log.record("agent_fiabilite", "incident_resolved", "m", {"incident_id": "inc-2"})
+    assert [d["incident_id"] for d in orphan_incidents(log.engine)] == ["inc-1"]
+
+    h = Harness()
+    assert h.agent.close_orphan_incidents(orphan_incidents(log.engine)) == ["inc-1"]
+    resolved = [e for e in h.bus.events if e.type == EventType.INCIDENT_RESOLVED]
+    assert resolved[0].payload["incident_id"] == "inc-1" and resolved[0].payload["abandoned"] is True
+    assert h.log.records[-1]["action"] == "incident_abandoned"

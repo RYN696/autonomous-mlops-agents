@@ -146,6 +146,12 @@ def test_model_registered_devient_training_completed(orch):
     assert done.payload["months"] == 1
 
 
+def test_l_optimisation_optuna_est_facturee(orch):
+    orch.handle(ev(EventType.MODEL_REGISTERED, "agent_retrain", version="4", training_seconds=10.0,
+                   tuning_seconds=200.0, period=["2023-04"]))
+    assert orch.bus.last(EventType.TRAINING_COMPLETED).payload["cpu_seconds"] == 210.0
+
+
 def test_une_seule_demande_a_la_fois(orch):
     request_id = ask_cost(orch)
     orch.handle(cost_answer(request_id))
@@ -276,3 +282,11 @@ def test_alertes_de_l_agent_couts_relayees(orch, notifier):
     orch.handle(ev(EventType.COST_RECOMMENDATION, "agent_cost", model="taxi-duration",
                    recommendation="scale_to_zero", monthly_saving=3.2))
     assert "scale_to_zero" in notifier.latest()[0]["text"]
+
+
+def test_incident_abandonne_ne_bloque_plus_le_retrain(orch, notifier):
+    orch.handle(incident(EventType.INCIDENT_OPENED))
+    orch.handle(ev(EventType.INCIDENT_RESOLVED, "agent_fiabilite", incident_id="inc-1", abandoned=True))
+    assert "clos sans vérification" in notifier.latest()[0]["text"]
+    orch.handle(drift())
+    assert EventType.COST_ESTIMATE in orch.bus.types()

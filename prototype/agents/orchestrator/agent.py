@@ -187,8 +187,10 @@ class Orchestrator:
     def on_model_registered(self, event: Event) -> None:
         # Traduction pour l'agent Coûts, qui attend training_completed
         p = event.payload
+        # l'optimisation Optuna (Retrain v4) consomme du calcul aussi : elle est facturée avec l'entraînement
+        cpu = (p.get("training_seconds") or 0.0) + (p.get("tuning_seconds") or 0.0)
         self.publish(EventType.TRAINING_COMPLETED, Severity.INFO, {
-            "cpu_seconds": p.get("training_seconds", 0.0), "months": len(p.get("period") or []) or None,
+            "cpu_seconds": cpu, "months": len(p.get("period") or []) or None,
             "version": p.get("version"), "request_id": p.get("request_id")})
 
     def on_model_promoted(self, event: Event) -> None:
@@ -233,6 +235,10 @@ class Orchestrator:
     def on_incident_resolved(self, event: Event) -> None:
         p = event.payload
         self.open_incidents.pop(p.get("incident_id"), None)
+        if p.get("abandoned"):
+            self.notifier.notify(f"⚠️ Incident {p.get('incident_id')} clos sans vérification : l'agent Fiabilité a "
+                                 "redémarré. Il rouvrira un incident si la panne est toujours là.", p.get("incident_id"))
+            return
         actions = ", ".join(a["action"] for a in p.get("actions", [])) or "aucune"
         self.notifier.notify(
             f"✅ Incident {p.get('incident_id')} résolu en {p.get('duration_seconds', 0):.0f} s "

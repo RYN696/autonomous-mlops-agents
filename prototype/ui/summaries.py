@@ -54,6 +54,8 @@ def _recommendation(d: dict) -> str:
 
 
 def _promoted(d: dict) -> str:
+    if d.get("message"):  # explication de l'agent Retrain (LLM vérifié ou modèle de texte)
+        return d["message"]
     if d.get("production_rmse") is None:
         return f"Premier modèle v{d.get('challenger_version')} en production (RMSE {_num(d.get('challenger_rmse'), '.3f')})"
     return (f"v{d.get('challenger_version')} promu : RMSE {_num(d.get('challenger_rmse'), '.3f')} contre "
@@ -61,6 +63,8 @@ def _promoted(d: dict) -> str:
 
 
 def _blocked(d: dict) -> str:
+    if d.get("message"):
+        return d["message"]
     return (f"Promotion bloquée : v{d.get('challenger_version')} RMSE {_num(d.get('challenger_rmse'), '.3f')} contre "
             f"{_num(d.get('production_rmse'), '.3f')} pour v{d.get('production_version')} "
             f"(gain {_pct(d.get('improvement'))}, minimum {_pct(d.get('min_improvement'))})")
@@ -123,7 +127,9 @@ SUMMARIES: dict[str, Callable[[dict], str]] = {
     "retrain_skipped": lambda d: f"Réentraînement ignoré : {d.get('reason')}",
     "retrain_failed": lambda d: f"Entraînement en échec : {d.get('error')}",
     "challenger_registered": lambda d: (f"Challenger v{d.get('version')} enregistré : RMSE {_num(d.get('rmse'), '.3f')} "
-                                        f"en {_num(d.get('training_seconds'), '.0f')} s"),
+                                        f"en {_num(d.get('training_seconds'), '.0f')} s"
+                                        + (f", après {_num(d.get('tuning_seconds'), '.0f')} s d'optimisation Optuna"
+                                           if d.get("tuning_seconds") else "")),
     "model_promoted": _promoted,
     "promotion_blocked": _blocked,
     # Fiabilité
@@ -138,6 +144,7 @@ SUMMARIES: dict[str, Callable[[dict], str]] = {
     "severity_changed": lambda d: f"Gravité {d.get('avant')} → {d.get('apres')}",
     "human_notified": lambda d: f"Humain prévenu : {d.get('reason')}",
     "incident_resolved": _resolved,
+    "incident_abandoned": lambda d: f"Incident clos sans vérification : {d.get('resume')}",
     "llm_unavailable": lambda d: f"LLM injoignable : {d.get('error')}",
     "llm_recovered": lambda d: "LLM de nouveau joignable",
     "agent_error": lambda d: f"Erreur interne : {d.get('error')}",

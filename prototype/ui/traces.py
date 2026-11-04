@@ -82,6 +82,8 @@ def _status(trace: Trace, now: datetime | None = None) -> tuple[str, str]:
     if trace.kind == INCIDENT:
         if "incident_resolved" in acts:
             return f"Résolu en {trace.duration:.0f} s", "ok"
+        if "incident_abandoned" in acts:
+            return "Abandonné (agent redémarré)", "muted"
         if _stale(trace, config.INCIDENT_HOLD_MINUTES, now):
             return "Sans clôture", "muted"
         if "human_notified" in acts:

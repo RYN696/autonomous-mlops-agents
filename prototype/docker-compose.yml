@@ -119,6 +119,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
       QUALITY_OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434}  # Ollama tourne sur le PC
+      # même petit modèle que le juge de Fiabilité, déjà en mémoire : charger llama3.1:8b (5,6 Go) sur une carte
+      # de 4 Go chassait les modèles de Fiabilité et bloquait Ollama plusieurs minutes (vu en direct)
+      QUALITY_LLM_MODEL: ${QUALITY_LLM_MODEL:-llama3.2:3b}
       QUALITY_CHECK_MINUTES: "10"
       PYTHONUNBUFFERED: "1"
     volumes:

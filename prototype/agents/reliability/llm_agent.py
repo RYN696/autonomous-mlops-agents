@@ -36,6 +36,30 @@ from common.events import Event, EventType, Severity
 from common.llm import LLMClient, LLMError
 
 AGENT_NAME = "agent_fiabilite"
+ORPHAN_LOOKBACK_HOURS = 24  # incidents restés ouverts lors d'un redémarrage : cherchés sur cette durée
+
+
+def orphan_incidents(engine, hours: float = ORPHAN_LOOKBACK_HOURS) -> list[dict]:
+    """Incidents ouverts dans le journal mais jamais clos (agent redémarré en plein incident)."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from common.action_log import action_log
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    with engine.connect() as conn:
+        rows = conn.execute(select(action_log.c.action, action_log.c.details).where(
+            action_log.c.agent == AGENT_NAME, action_log.c.timestamp >= since,
+            action_log.c.action.in_(("incident_opened", "incident_resolved", "incident_abandoned")))
+            .order_by(action_log.c.id))
+        opened: dict[str, dict] = {}
+        for action, details in rows:
+            incident_id = (details or {}).get("incident_id")
+            if action == "incident_opened":
+                opened[incident_id] = details
+            else:
+                opened.pop(incident_id, None)
+    return list(opened.values())
 SEVERITY_OF = {"faible": Severity.INFO, "moyenne": Severity.WARNING, "elevee": Severity.CRITICAL}
 RESTART_ACTIONS = {Action.RESTART_API, Action.RECREATE_API}
 WAIT_WORDS = {"attendre", "fin", "aucun", "aucune", "rien", "none", "stop", "aucune_action"}
@@ -101,6 +125,8 @@ class LLMReliabilityAgent:
         self.trend: deque[dict] = deque(maxlen=config.LLM_TREND_CYCLES)
         self.incident: IncidentState | None = None
         self.llm_down = False
+        self.llm_retry_at = 0.0     # LLM indisponible : pas de nouvel appel avant cet instant
+        self.llm_backoff = 0.0
         self.now = 0.0
         self.window: WindowStats | None = None
         self.probes: ProbeResult | None = None
@@ -246,6 +272,8 @@ class LLMReliabilityAgent:
 
     def _ask(self, phase: str, system: str, context: dict, history: list | None = None,
              schema: dict | None = None) -> dict | None:
+        if self.llm_down and self.now < self.llm_retry_at:
+            return None             # on laisse Ollama vider sa file avant de réessayer
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": json.dumps(context, ensure_ascii=False, default=str)},
                     *(history or [])]
@@ -441,7 +469,9 @@ class LLMReliabilityAgent:
         return checked
 
     def _on_llm_down(self, exc: Exception) -> None:
-        log.error("LLM indisponible : %s", exc)
+        self.llm_backoff = min(max(config.LLM_RETRY_MIN_SECONDS, self.llm_backoff * 2), config.LLM_RETRY_MAX_SECONDS)
+        self.llm_retry_at = self.now + self.llm_backoff
+        log.error("LLM indisponible : %s (nouvel essai dans %.0f s)", exc, self.llm_backoff)
         if self.llm_down:
             return
         self.llm_down = True
@@ -452,6 +482,7 @@ class LLMReliabilityAgent:
                        "intervention_requise": True})
 
     def _on_llm_up(self) -> None:
+        self.llm_backoff = 0.0
         if self.llm_down:
             self.llm_down = False
             self._record("llm_recovered", {})
@@ -635,6 +666,23 @@ class LLMReliabilityAgent:
         self.last_closed = {"id": inc.id, "cause": inc.cause, "at": self.now, "resume": str(resume)}
         self.incident = None
         return {"ok": True, "duree_s": report["duration_seconds"], "note_du_juge": verdict.score}
+
+    def close_orphan_incidents(self, orphans: list[dict] | None = None) -> list[str]:
+        """Au démarrage : l'incident en cours vit en mémoire, il est perdu si l'agent redémarre
+        (vu en direct pendant un `docker compose up --build`). On le clôt explicitement, sinon
+        l'orchestrateur bloquerait les réentraînements en croyant la panne toujours en cours."""
+        if orphans is None:
+            engine = getattr(self.action_log, "engine", None)
+            orphans = orphan_incidents(engine) if engine is not None else []
+        for d in orphans:
+            payload = {"incident_id": d.get("incident_id"), "cause": d.get("cause"), "component": d.get("component"),
+                       "level": d.get("level"), "abandoned": True, "actions": [],
+                       "resume": "agent Fiabilité redémarré pendant l'incident : clos sans vérification, "
+                                 "la surveillance reprend et rouvrira un incident si la panne est toujours là"}
+            self._record("incident_abandoned", payload)
+            self._publish(EventType.INCIDENT_RESOLVED, Severity.WARNING, payload)
+            log.warning("Incident %s abandonné (redémarrage de l'agent)", payload["incident_id"])
+        return [d.get("incident_id") for d in orphans]
 
     # ------------------------------------------------------------------ traces
     def _store_metrics(self) -> None:

@@ -46,8 +46,9 @@ class Scenario:
 SCENARIOS: tuple[Scenario, ...] = (
     Scenario("drift", "Données", "Dérive des données",
              "L'agent Qualité contrôle le mois choisi avec des distances de trajet gonflées de 50 %.",
-             "Orchestrateur → coût → validation humaine (budget de démo) → Retrain entraîne sur ce mois "
-             "→ promotion ou promotion bloquée.", "quality", with_month=True),
+             "Orchestrateur → coût → validation humaine (budget de démo) → Retrain optimise (Optuna) puis "
+             "entraîne sur ce mois, en quelques minutes → promotion ou promotion bloquée, expliquée.",
+             "quality", with_month=True),
     Scenario("corrupted", "Données", "Données corrompues",
              "10 % des trajets du mois ont une arrivée avant le départ.",
              "Incident « données corrompues », aucun réentraînement.", "quality", with_month=True),
