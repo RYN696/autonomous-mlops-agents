@@ -94,3 +94,7 @@ LLM_MAX_PROPOSALS = int(os.getenv("LLM_MAX_PROPOSALS", "2"))    # propositions d
 LLM_THINK = os.getenv("LLM_THINK", "off")    # "off" : coupe le mode réflexion (qwen3...) trop lent ; "on" ; "auto" : défaut du modèle
 LLM_TREND_CYCLES = int(os.getenv("LLM_TREND_CYCLES", "8"))      # mesures passées montrées au LLM
 JUDGE_MIN_SCORE = int(os.getenv("JUDGE_MIN_SCORE", "6"))        # note minimale (sur 10) pour approuver
+
+# --- Orchestrateur ---
+ORCHESTRATOR_WEB_PORT = int(os.getenv("ORCHESTRATOR_WEB_PORT", "8080"))  # page web des notifications
+RETRAIN_TIMEOUT_MINUTES = float(os.getenv("RETRAIN_TIMEOUT_MINUTES", "30"))  # sans réponse de Retrain, on considère qu'il a échoué
