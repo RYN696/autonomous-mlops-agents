@@ -8,6 +8,7 @@ import pandas as pd
 from sqlalchemy import create_engine, inspect
 import streamlit as st
 
+# Configuration de la BDD
 os.environ["DATABASE_URL"] = "sqlite:///cost_demo.db"
 
 PROTOTYPE_DIR = Path(__file__).resolve().parents[1]
@@ -17,6 +18,7 @@ if str(PROTOTYPE_DIR) not in sys.path:
 from agents.cost.service import build_agent
 from agents.cost.sql_store import SqlCostStore
 
+# Module d'auto-refresh
 try:
   from streamlit_autorefresh import st_autorefresh
 
@@ -25,20 +27,27 @@ except ImportError:
   HAS_AUTOREFRESH = False
 
 st.set_page_config(
-    page_title="Démo Dynamique - Agent Coûts", layout="wide"
+    page_title="Démo Dynamique - Agent Coûts FinOps", layout="wide"
 )
 
 if HAS_AUTOREFRESH:
   st_autorefresh(interval=2000, key="datarefresh")
 
-# --- Instanciation Store & Agent ---
+# --- INITIALISATION DE LA MÉMOIRE DE SESSION (SESSION STATE) ---
+if "summary_report" not in st.session_state:
+  st.session_state["summary_report"] = None
+if "chat_response" not in st.session_state:
+  st.session_state["chat_response"] = None
+
+# --- Initialisation Agent et Store ---
 store = SqlCostStore()
 agent = build_agent(store=store)
 
 default_budget = float(getattr(agent.config, "monthly_budget", 20.0))
 
-# --- Sidebar ---
+# --- Panneau Latéral (Sidebar) ---
 st.sidebar.title("⚙️ Configuration FinOps")
+
 custom_budget = st.sidebar.slider(
     "Budget mensuel simulé (€)",
     min_value=1.0,
@@ -47,18 +56,19 @@ custom_budget = st.sidebar.slider(
     step=0.50,
     key="budget_slider",
 )
+
 ollama_model = st.sidebar.text_input(
     "Modèle Ollama :", value="phi3", key="ollama_model_input"
 )
 
-# --- Titre ---
+# --- Titre Principal ---
 st.title("🔄 Démo Dynamique Temps Réel - Agent Coûts")
 st.caption(
     "L'interface reflète automatiquement le traitement des événements"
     " enregistrés dans la BDD SQLite."
 )
 
-# --- Inspection Robuste BDD SQLite ---
+# --- Lecture & Inspection BDD SQLite ---
 engine = create_engine("sqlite:///cost_demo.db")
 inspector = inspect(engine)
 all_tables = [
@@ -67,12 +77,10 @@ all_tables = [
 
 df_records = pd.DataFrame()
 if all_tables:
-  # Sélection de la table de coût
   target_table = "cost_records" if "cost_records" in all_tables else all_tables[0]
   with engine.connect() as conn:
     df_records = pd.read_sql(f"SELECT * FROM {target_table}", conn)
 
-# Détection automatique de la colonne contenant les montants
 cost_col = None
 if not df_records.empty:
   for col in ["cost", "amount", "estimated_cost", "val", "price"]:
@@ -86,7 +94,7 @@ if not df_records.empty:
     if numeric_cols:
       cost_col = numeric_cols[0]
 
-# --- Algorithme de Détection des Pics de Coûts (Cost Spikes) ---
+# --- Algorithme de Détection des Pics (Cost Spikes) ---
 spike_detected = False
 spike_msg = ""
 
@@ -97,7 +105,6 @@ if not df_records.empty and cost_col:
     prev_mean = df_records[cost_col].iloc[:-1].mean()
     latest_cost = df_records[cost_col].iloc[-1]
 
-    # Détection si le dernier coût est > 50% au-dessus de la moyenne précédente
     if prev_mean > 0 and latest_cost > 1.5 * prev_mean:
       spike_detected = True
       increase_pct = ((latest_cost - prev_mean) / prev_mean) * 100
@@ -118,7 +125,7 @@ if not df_records.empty and cost_col:
 else:
   df_display = df_records.copy()
 
-# --- Section 1 : Enregistrements & Graphique Temporel ---
+# --- Section 1 : Enregistrements & Graphiques ---
 st.header("⚡ Enregistrements & Suivi Temporel SQL")
 
 if spike_detected:
@@ -143,7 +150,7 @@ with col_chart:
   else:
     st.caption("Le graphique s'affichera dès que des coûts seront enregistrés.")
 
-# --- Section 2 : État dynamique des 5 Objectifs ---
+# --- Section 2 : Analyse des 5 Objectifs ---
 st.write("---")
 st.header("🎯 Analyse des 5 Objectifs")
 
@@ -191,7 +198,7 @@ if not df_records.empty:
 else:
   st.caption("Aucune recommandation émise pour le moment.")
 
-# --- Section 3 : Module IA Ollama (Synthèse & Chat) ---
+# --- Section 3 : Module IA avec Persistance des Réponses ---
 st.write("---")
 st.header("🤖 Module IA LLM Local (Ollama / Phi-3)")
 
@@ -221,23 +228,35 @@ with col_summary:
   st.subheader("📝 Synthèse Managériale Auto")
   if st.button("💬 Générer la synthèse globale", key="btn_summary"):
     with st.spinner(f"Analyse par Ollama ({ollama_model})..."):
-      report = explain_cost_with_ollama(
+      # Stockage permanent dans la session
+      st.session_state["summary_report"] = explain_cost_with_ollama(
           financial_context, model_name=ollama_model
       )
-      st.info(report)
+
+  # Affichage persistant tant qu'un rapport existe
+  if st.session_state["summary_report"]:
+    with st.container(border=True):
+      st.caption("📌 **Rapport Décisionnel FinOps** • Proposé par Phi-3")
+      st.markdown(st.session_state["summary_report"])
 
 with col_chat:
   st.subheader("❓ Posez une question sur les coûts")
   user_q = st.text_input(
-      "Exemple: Pourquoi la dernière transaction est-elle si élevée ?",
+      "Exemple : Pourquoi la dernière transaction est-elle si élevée ?",
       key="user_question",
   )
   if st.button("🤖 Obtenir une réponse", key="btn_ask"):
     if user_q.strip():
       with st.spinner("Réflexion de l'assistant..."):
-        ans = ask_cost_assistant(
+        # Stockage permanent dans la session
+        st.session_state["chat_response"] = ask_cost_assistant(
             financial_context, user_q, model_name=ollama_model
         )
-        st.success(ans)
     else:
       st.warning("Veuillez saisir une question.")
+
+  # Affichage persistant de la réponse au chat
+  if st.session_state["chat_response"]:
+    with st.container(border=True):
+      st.caption("💡 **Analyse Expert MLOps**")
+      st.markdown(st.session_state["chat_response"])
