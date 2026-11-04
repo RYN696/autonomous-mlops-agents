@@ -77,7 +77,7 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
                                production=status.production(), costs=status.month_cost(),
                                questions=notifier.pending(), messages=notifier.latest(12), recent=recent,
                                open_incidents=incidents, in_progress=in_progress(),
-                               docker_ok=bool(containers))
+                               docker_ok=bool(containers), containers=containers)
 
     @app.get("/parcours")
     def traces():

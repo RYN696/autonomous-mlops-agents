@@ -51,6 +51,22 @@ services:
     container_name: mlops-api
     init: true
 
+  init:
+    # Premier démarrage : entraîne et met en production un premier modèle s'il n'y en a pas
+    # (télécharge les données la première fois), puis s'arrête. Ne refait rien ensuite.
+    build: .
+    command: python -m pipeline.bootstrap
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      API_URL: http://api:9696
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - mlflow
+      - api
+    restart: "no"
+
   retrain:
     build: .
     command: python -m agents.retrain
@@ -65,10 +81,16 @@ services:
     volumes:
       - ./data:/app/data
     depends_on:
-      - mlflow
-      - redis
-      - postgres
-      - api
+      mlflow:
+        condition: service_started
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      api:
+        condition: service_started
+      init:
+        condition: service_completed_successfully  # un modèle est en production
     restart: unless-stopped
   cost:
     build: .
@@ -102,9 +124,14 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"  # pour Linux (déjà défini sous Docker Desktop)
     depends_on:
-      - mlflow
-      - redis
-      - postgres
+      mlflow:
+        condition: service_started
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      init:
+        condition: service_completed_successfully  # la dérive se mesure contre le modèle en production
     restart: unless-stopped
 
   reliability:
@@ -116,7 +143,6 @@ services:
       DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
       API_URL: http://api:9696
       OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434}
-      COMPOSE_PROJECT_NAME: prototype  # recreate_api relance le service api de CE projet compose
       PYTHONUNBUFFERED: "1"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock  # restart / recreate des conteneurs autorisés
@@ -140,11 +166,13 @@ services:
       DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
       MLFLOW_TRACKING_URI: http://mlflow:5000   # interface : modèle en production
       API_URL: http://api:9696                  # interface : santé de l'API
-      COMPOSE_PROJECT_NAME: prototype           # interface : état des conteneurs du projet
+      OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434}  # interface : état d'Ollama
       DEMO_CONTROLS: "1"                        # interface : page Scénarios (boutons de dérive et de panne)
       PYTHONUNBUFFERED: "1"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock  # interface : état des conteneurs (lecture seule en pratique)
+      - /var/run/docker.sock:/var/run/docker.sock  # interface : état des conteneurs, page Scénarios
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - redis
       - postgres

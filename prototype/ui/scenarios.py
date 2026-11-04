@@ -26,9 +26,9 @@ from typing import Any, Callable
 import requests
 
 from common import config
+from common.docker_project import compose_project
 
 ENABLED = os.getenv("DEMO_CONTROLS", "0") == "1"
-PROJECT = os.getenv("COMPOSE_PROJECT_NAME", "prototype")
 AGENT = "demo"
 
 
@@ -179,7 +179,8 @@ class ScenarioRunner:
     def _quality(self, run: Run) -> str:
         """Contrôle Qualité dans son propre conteneur (données, modèle et LLM y sont configurés)."""
         found = self.docker.containers.list(filters={
-            "label": [f"com.docker.compose.project={PROJECT}", "com.docker.compose.service=quality"]})
+            "label": [f"com.docker.compose.project={compose_project(self.docker)}",
+                      "com.docker.compose.service=quality"]})
         if not found:
             raise RuntimeError("conteneur quality introuvable : lancer `docker compose up -d`")
         cmd = ["python", "-m", "agents.quality", "--year", "2023", "--month", str(run.params["month"]),

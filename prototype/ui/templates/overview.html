@@ -6,6 +6,21 @@
 <p class="sub">Les 5 agents surveillent la pipeline taxi NYC, se parlent par Redis et écrivent chaque décision dans le journal d'actions.
   Pour les mettre à l'épreuve : <a href="/scenarios">lancer un scénario de test</a>.</p>
 
+<div id="setup" data-live>
+  {% set init = containers.get('init') %}
+  {% if not production and init and init.status == 'running' %}
+    <div class="panel notice"><b>Premier démarrage</b> : le service <code>init</code> télécharge les données et entraîne
+      le premier modèle (quelques minutes). Les agents Qualité et Retrain démarrent juste après.</div>
+  {% elif not production and init and init.status == 'exited' %}
+    <div class="panel notice"><b>Pas de modèle en production</b> : le service <code>init</code> s'est arrêté sans en
+      créer un. Voir <code>docker compose logs init</code> (souvent : pas d'accès Internet pour télécharger les données).</div>
+  {% endif %}
+  {% for s in services if s.fix %}
+    <div class="panel notice"><b>{{ s.name }} : {{ s.detail }}</b> — sans lui, l'agent Fiabilité suspend sa
+      surveillance. Sur le PC : <code>{{ s.fix }}</code></div>
+  {% endfor %}
+</div>
+
 <div id="kpis" data-live class="grid kpis">
   <div class="kpi">
     <div class="label">Modèle en production</div>

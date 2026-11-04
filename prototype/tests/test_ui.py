@@ -295,3 +295,54 @@ def test_trafic_simule_demarre_et_s_arrete(log, monkeypatch):
     runner.stop_traffic()
     assert runner.traffic.ok >= 2 and not runner.traffic.running
     assert [r["action"] for r in log.latest()] == ["traffic_stopped", "traffic_started"]
+
+
+# ---------- premier démarrage chez un coéquipier ----------
+def test_bandeaux_de_premier_demarrage(log, notifier):
+    class Fresh(FakeStatus):
+        def containers(self):
+            return {"init": {"status": "running", "name": "init", "started_at": T0.isoformat(), "restarts": 0}}
+
+        def production(self):
+            return None
+
+        def services(self):
+            return [{"name": "Ollama", "ok": False, "warn": False, "detail": "injoignable : lancer Ollama sur le PC",
+                     "fix": "ollama serve"}]
+
+    page = create_app(notifier, FakeBus(), log, status=Fresh()).test_client().get("/").get_data(as_text=True)
+    assert "Premier démarrage" in page and "ollama serve" in page
+
+
+def test_etat_ollama_et_modeles_manquants(log):
+    from ui.status import PipelineStatus
+
+    class Http:
+        def __init__(self, models):
+            self.models = models
+
+        def get(self, url, timeout=None, params=None):
+            class R:
+                status_code = 200
+                json = staticmethod(lambda: {"models": [{"name": m} for m in self.models]})
+            return R()
+
+    assert PipelineStatus(log.engine, http=Http(["qwen2.5:3b", "llama3.2:3b"]))._ollama()["detail"] == "LLM des agents"
+    missing = PipelineStatus(log.engine, http=Http(["qwen2.5:3b"]))._ollama()
+    assert missing["warn"] and missing["fix"] == "ollama pull llama3.2:3b"
+
+
+def test_nom_du_projet_compose_detecte():
+    from common.docker_project import compose_project
+
+    class Docker:
+        class containers:
+            @staticmethod
+            def get(name):
+                class C:
+                    labels = {"com.docker.compose.project": "clone-de-ismail"}
+                return C()
+
+    compose_project.cache_clear()
+    assert compose_project(Docker()) == "clone-de-ismail"
+    compose_project.cache_clear()

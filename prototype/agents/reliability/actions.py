@@ -151,7 +151,8 @@ class ReliabilityActions:
         return f"conteneur {name} redémarré"
 
     def _recreate_api(self) -> str:
-        self.runner(["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d",
+        from common.docker_project import compose_project
+        self.runner(["docker", "compose", "-f", str(COMPOSE_FILE), "-p", compose_project(self.docker), "up", "-d",
                      "--force-recreate", "--no-deps", config.API_SERVICE_NAME])
         return "conteneur de l'API recréé"
 

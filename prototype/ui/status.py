@@ -16,9 +16,12 @@ import requests
 from sqlalchemy import func, select, text
 
 from common import config
+from common.docker_project import compose_project
 
-PROJECT = os.getenv("COMPOSE_PROJECT_NAME", "prototype")
 TIMEOUT = 2.0
+# Modèles Ollama utilisés par les agents (Qualité : explication ; Fiabilité : décision et juge)
+OLLAMA_URL = os.getenv("OLLAMA_URL", config.OLLAMA_URL)
+NEEDED_MODELS = (config.LLM_AGENT_MODEL, config.LLM_JUDGE_MODEL)
 
 
 def cached(seconds: float):
@@ -49,7 +52,7 @@ class PipelineStatus:
                 import docker
                 self._docker = docker.from_env()
             found = self._docker.containers.list(
-                all=True, filters={"label": f"com.docker.compose.project={PROJECT}"})
+                all=True, filters={"label": f"com.docker.compose.project={compose_project(self._docker)}"})
         except Exception:
             return {}
         out = {}
@@ -86,13 +89,30 @@ class PipelineStatus:
             db_ok = False
         api_detail = (f"modèle v{api.get('model_version')}" + (" — mode dégradé" if api.get("degraded") else "")
                       if api else "injoignable")
+        if api and api.get("model_version") is None:
+            api_detail = "pas encore de modèle"
         return [
             {"name": "API de prédiction", "ok": api.get("status") == "ok", "detail": api_detail,
              "warn": bool(api.get("degraded"))},
             {"name": "MLflow", "ok": self._http_ok(f"{config.MLFLOW_TRACKING_URI}/health"), "detail": "registre"},
             {"name": "Redis", "ok": redis_ok, "detail": "bus d'événements"},
             {"name": "Postgres", "ok": db_ok, "detail": "journal d'actions"},
+            self._ollama(),
         ]
+
+    def _ollama(self) -> dict:
+        """LLM local des agents : sans lui, Fiabilité suspend sa surveillance."""
+        try:
+            tags = self.http.get(f"{OLLAMA_URL}/api/tags", timeout=TIMEOUT).json()
+        except Exception:
+            return {"name": "Ollama", "ok": False, "warn": False,
+                    "detail": "injoignable : lancer Ollama sur le PC", "fix": "ollama serve"}
+        have = {m["name"] for m in tags.get("models", [])}
+        missing = [m for m in NEEDED_MODELS if m not in have and f"{m}:latest" not in have]
+        if missing:
+            return {"name": "Ollama", "ok": True, "warn": True, "detail": "modèle(s) manquant(s)",
+                    "fix": " ; ".join(f"ollama pull {m}" for m in missing)}
+        return {"name": "Ollama", "ok": True, "warn": False, "detail": "LLM des agents"}
 
     # --- modèle en production (registre MLflow) ---
     def _production(self) -> dict | None:

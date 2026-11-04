@@ -1,18 +1,43 @@
 # Prototype : système multi-agents MLOps autonome
 
-Socle commun du prototype. Il lance la pipeline taxi NYC (entraînement, registre
-MLflow, API de prédiction) et l'infrastructure dont les 5 agents ont besoin
-(bus d'événements Redis, journal d'actions Postgres, tableau de bord Grafana).
+Pipeline taxi NYC (entraînement, registre MLflow, API de prédiction) surveillée par
+5 agents (Qualité, Orchestrateur LangGraph, Coûts, Retrain, Fiabilité) qui se parlent
+par Redis, avec une interface web pour suivre chaque décision et lancer des tests.
 
-## Prérequis
+## Démarrage rapide (après un `git pull`)
 
-- Git
-- Python 3.11 ou plus récent
-- Docker Desktop (démarré)
+Prérequis : **Git**, **Docker Desktop** (démarré) et **[Ollama](https://ollama.com)**
+(les LLM des agents tournent en local). Python n'est nécessaire que pour lancer les tests.
 
-## Installation (une seule fois)
+```bash
+# 1. Récupérer le code (tant que la PR n'est pas fusionnée, la branche est orchestrator-langgraph)
+git fetch origin
+git checkout orchestrator-langgraph     # ensuite : git checkout prototype && git pull
+cd prototype
 
-Depuis la racine du dépôt, sur la branche `prototype` :
+# 2. Les modèles LLM des agents (une seule fois, ~4 Go)
+ollama pull qwen2.5:3b       # agent Fiabilité : décide
+ollama pull llama3.2:3b      # juge de l'agent Fiabilité
+ollama pull llama3.1:8b      # agent Qualité : explique la dérive (facultatif)
+
+# 3. Tout lancer
+copy .env.example .env       # macOS / Linux : cp .env.example .env
+docker compose up -d --build
+```
+
+Ouvrir **http://localhost:8080**. Si le port 8080 est déjà pris (Oracle, par exemple),
+mettre `ORCHESTRATOR_HOST_PORT=8090` dans `.env`, relancer `docker compose up -d`
+et ouvrir http://localhost:8090.
+
+Au premier lancement, le service `init` télécharge les données taxi (Internet requis)
+et entraîne un premier modèle : compter 3 à 5 minutes, l'interface l'indique. Ensuite,
+tout se teste depuis la page **Scénarios de test** (voir plus bas). Si Ollama ou un
+modèle manque, un bandeau de la vue d'ensemble donne la commande à lancer.
+
+Arrêter : `docker compose down` (ajouter `-v` pour tout effacer, y compris les modèles
+et le journal d'actions).
+
+## Pour développer (Python)
 
 ```bash
 cd prototype
@@ -22,27 +47,14 @@ python -m venv .venv
 # macOS / Linux :
 source .venv/bin/activate
 pip install -r requirements.txt
-copy .env.example .env      # macOS / Linux : cp .env.example .env
+pytest                        # avant chaque pull request
 ```
 
-## Lancer le prototype
-
-```bash
-docker compose up -d --build                     # MLflow, Postgres, Redis, Grafana, API
-python -m pipeline.train --year 2023 --month 1   # premier modèle, mis en production
-curl -X POST http://localhost:9696/reload        # l'API charge le modèle
-```
-
-Le premier entraînement télécharge deux mois de données taxi dans `data/`
-(une seule fois, elles sont ensuite lues depuis le disque).
-
-Tester une prédiction :
+Tester une prédiction à la main :
 
 ```bash
 curl -X POST http://localhost:9696/predict -H "Content-Type: application/json" -d "{\"PULocationID\": 43, \"DOLocationID\": 151, \"trip_distance\": 1.8}"
 ```
-
-Arrêter : `docker compose down` (ajouter `-v` pour tout effacer, y compris les modèles).
 
 ## Services
 
@@ -90,24 +102,9 @@ se rafraîchit toute seule toutes les 5 s.
 
 ### 1. Démarrer
 
-```bash
-# Windows (PowerShell) : .venv\Scripts\activate     macOS / Linux : source .venv/bin/activate
-ollama serve                 # si Ollama ne tourne pas déjà (agents Qualité et Fiabilité)
-docker compose up -d --build
-```
-
-Ouvrir http://localhost:8080. Si le port 8080 est déjà pris (par exemple par Oracle),
-lancer avec un autre port et ouvrir http://localhost:8090 :
-
-```bash
-# PowerShell
-$env:ORCHESTRATOR_HOST_PORT=8090; docker compose up -d --build
-# macOS / Linux
-ORCHESTRATOR_HOST_PORT=8090 docker compose up -d --build
-```
-
-Vérifier sur la carte que les 5 agents sont « en marche », puis écrire son prénom
-dans **Signer en tant que** (menu de gauche) : il signe les validations.
+Voir **Démarrage rapide** en haut de ce fichier. Vérifier sur la carte de la vue
+d'ensemble que les 5 agents sont « en marche », puis écrire son prénom dans
+**Signer en tant que** (menu de gauche) : il signe les validations.
 
 ### 2. Scénarios
 
