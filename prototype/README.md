@@ -53,6 +53,7 @@ Arrêter : `docker compose down` (ajouter `-v` pour tout effacer, y compris les 
 | Grafana | http://localhost:3000 | Tableau de bord (source Postgres déjà configurée) |
 | Postgres | localhost:5432 (mlops / mlops) | Journal d'actions et métriques |
 | Redis | localhost:6379 | Bus d'événements entre agents |
+| Orchestrateur | http://localhost:8080 | Messages et validations humaines ; graphes LangGraph sur `/graph` (port hôte : `ORCHESTRATOR_HOST_PORT` si 8080 est pris) |
 
 ## Tests
 

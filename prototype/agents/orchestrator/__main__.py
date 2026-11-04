@@ -2,7 +2,7 @@
 
 Deux choses tournent en même temps :
 - l'orchestrateur écoute Redis (dans un fil à part) ;
-- la page web répond sur http://localhost:8080."""
+- la page web répond sur http://localhost:8080 (graphes LangGraph sur /graph)."""
 import threading
 
 from agents.orchestrator.agent import Orchestrator
@@ -17,4 +17,4 @@ log = ActionLog()
 orchestrator = Orchestrator(bus=EventBus(), log=log, notifier=notifier)
 threading.Thread(target=orchestrator.run, daemon=True).start()
 
-create_app(notifier, EventBus(), log).run(host="0.0.0.0", port=config.ORCHESTRATOR_WEB_PORT)
+create_app(notifier, EventBus(), log, orchestrator).run(host="0.0.0.0", port=config.ORCHESTRATOR_WEB_PORT)

@@ -169,3 +169,54 @@ def test_page_web_valider_publie_approval_given(tmp_path, notifier):
 
     assert bus.types() == [EventType.APPROVAL_GIVEN]
     assert bus.events[0].payload == {"request_id": "req-1", "approved": True, "approved_by": "ismail"}
+
+
+# ---------- LangGraph ----------
+def test_fil_en_pause_puis_oublie(orch):
+    request_id = ask_cost(orch)
+    assert orch.waiting_for(request_id) == EventType.COST_ESTIMATED
+
+    orch.handle(cost_answer(request_id, exceeds=True))
+    assert orch.waiting_for(request_id) == EventType.APPROVAL_GIVEN
+
+    orch.handle(ev(EventType.APPROVAL_GIVEN, "page_web", request_id=request_id,
+                   approved=True, approved_by="ismail"))
+    assert orch.pending == set()
+    assert orch.workflow.get_state(orch.thread(request_id)).values == {}  # fil effacé du checkpointer
+
+
+def test_cout_renvoye_pendant_l_attente_humaine_ignore(orch):
+    request_id = ask_cost(orch)
+    orch.handle(cost_answer(request_id, exceeds=True))
+    orch.handle(cost_answer(request_id))  # doublon : on attend un humain, pas un coût
+
+    assert EventType.RETRAIN_REQUESTED not in orch.bus.types()
+    assert orch.waiting_for(request_id) == EventType.APPROVAL_GIVEN
+
+
+def test_regle_forbidden_aucun_retrain(tmp_path, notifier):
+    orch = Orchestrator(bus=FakeBus(), log=ActionLog(url=f"sqlite:///{tmp_path / 'log.db'}"),
+                        notifier=notifier, rules=Rules({"retrain": "forbidden"}))
+    orch.handle(cost_answer(ask_cost(orch)))
+
+    assert EventType.RETRAIN_REQUESTED not in orch.bus.types()
+    assert "interdit" in notifier.latest()[0]["text"]
+    assert orch.pending == set()
+
+
+def test_evenement_mal_forme_n_arrete_pas_l_ecoute(orch):
+    request_id = ask_cost(orch)
+    orch.safe_handle(ev(EventType.COST_ESTIMATED, "agent_cost", request_id=request_id))  # sans options
+    assert orch.pending == set()  # la demande cassée ne bloque pas les suivantes
+
+    orch.safe_handle(ev(EventType.MODEL_REGISTERED, "agent_retrain", version="4", training_seconds=1.0))
+    assert orch.bus.last(EventType.TRAINING_COMPLETED).payload["version"] == "4"
+    orch.handle(drift())
+    assert orch.bus.types().count(EventType.COST_ESTIMATE) == 2
+
+
+def test_page_graph_affiche_les_deux_graphes(tmp_path, notifier, orch):
+    client = create_app(notifier, FakeBus(), orch.log, orch).test_client()
+    html = client.get("/graph").get_data(as_text=True)
+
+    assert "wait_human" in html and "drift_detected" in html

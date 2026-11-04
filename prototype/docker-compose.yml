@@ -87,7 +87,7 @@ services:
     build: .
     command: python -m agents.orchestrator
     ports:
-      - "8080:8080"
+      - "${ORCHESTRATOR_HOST_PORT:-8080}:8080"  # autre port si 8080 est pris (ex. Oracle)
     environment:
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops

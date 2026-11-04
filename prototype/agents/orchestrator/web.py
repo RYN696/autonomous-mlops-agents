@@ -1,7 +1,8 @@
 """Page web de l'orchestrateur (http://localhost:8080).
 
 À gauche : messages et questions pour l'humain, avec les boutons Valider / Refuser.
-À droite : les dernières lignes du journal d'actions de tous les agents."""
+À droite : les dernières lignes du journal d'actions de tous les agents.
+/graph : les graphes LangGraph de l'orchestrateur (Mermaid)."""
 from __future__ import annotations
 
 from flask import Flask, redirect, render_template_string, request
@@ -34,6 +35,7 @@ PAGE = """<!doctype html>
 </head>
 <body>
 <h1>Orchestrateur MLOps</h1>
+{% if has_graph %}<p><a href="/graph">Voir les graphes LangGraph</a></p>{% endif %}
 <p>Ton prénom (pour signer les validations) : <input id="who" placeholder="ismail"></p>
 <div class="cols">
   <div>
@@ -76,12 +78,41 @@ PAGE = """<!doctype html>
 </html>"""
 
 
-def create_app(notifier, bus, log) -> Flask:
+GRAPH_PAGE = """<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Graphes de l'orchestrateur</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 24px; background: #f6f7f9; color: #1f2328; }
+  .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<p><a href="/">← Messages</a></p>
+<h1>Graphes LangGraph de l'orchestrateur</h1>
+{% for title, code in graphs.items() %}
+  <div class="card"><h2>{{ title }}</h2><pre class="mermaid">{{ code }}</pre></div>
+{% endfor %}
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true });</script>
+</body>
+</html>"""
+
+
+def create_app(notifier, bus, log, orchestrator=None) -> Flask:
     app = Flask("orchestrator-web")
 
     @app.get("/")
     def index():
-        return render_template_string(PAGE, notifications=notifier.latest(), actions=log.latest(20))
+        return render_template_string(PAGE, notifications=notifier.latest(), actions=log.latest(20),
+                                      has_graph=orchestrator is not None)
+
+    @app.get("/graph")
+    def graph():
+        if orchestrator is None:
+            return "Orchestrateur non branché sur cette page.", 404
+        return render_template_string(GRAPH_PAGE, graphs=orchestrator.mermaid())
 
     @app.post("/answer")
     def answer():

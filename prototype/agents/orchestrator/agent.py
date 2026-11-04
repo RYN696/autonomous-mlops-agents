@@ -1,8 +1,10 @@
-"""Orchestrateur : le chef d'orchestre des 4 agents.
+"""Orchestrateur : le chef d'orchestre des 4 agents, construit avec LangGraph.
 
-Il n'entraîne, ne répare et ne calcule rien lui-même. Pour chaque événement
-reçu, il décide de la suite selon rules/autonomy.yaml et prévient l'humain
-sur la page web (notifier).
+Il n'entraîne, ne répare et ne calcule rien lui-même. Chaque événement reçu
+passe dans un graphe routeur (un nœud par type d'événement). La demande de
+réentraînement, qui attend le coût puis parfois un humain, est un second
+graphe avec pause/reprise (voir workflow.py). Les décisions suivent
+rules/autonomy.yaml et l'humain est prévenu sur la page web (notifier).
 
 Écoute : drift_detected, cost_estimated, approval_given, model_registered,
          model_promoted, promotion_blocked, action_logged, incident_opened,
@@ -13,14 +15,19 @@ Publie : cost_estimate, retrain_requested, approval_requested,
 from __future__ import annotations
 
 import time
+import traceback
 import uuid
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 
-from agents.orchestrator.rules import APPROVAL, AUTO, Rules
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
+
+from agents.orchestrator.rules import Rules
+from agents.orchestrator.workflow import AGENT, WAITING_FOR, build_retrain_graph
 from common import config
 from common.events import Event, EventType, Severity
 
-AGENT = "orchestrator"
 RETRAIN = "agent_retrain"  # nom de source de l'agent Retrain
 
 LISTENED = [
@@ -31,24 +38,25 @@ LISTENED = [
 ]
 
 
+class RouterState(TypedDict):
+    event: Event
+
+
 class Orchestrator:
     def __init__(self, bus, log, notifier, rules: Rules | None = None,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, checkpointer=None):
         self.bus = bus
         self.log = log
         self.notifier = notifier
         self.rules = rules or Rules()
         self.clock = clock
-        self.pending: dict[str, dict] = {}  # request_id -> demande en cours (étape "cost" ou "approval")
+        self.checkpointer = checkpointer or InMemorySaver()
+        self.workflow = build_retrain_graph(self, self.checkpointer)
+        self.router = self.build_router()
+        self.pending: set[str] = set()  # request_id des fils en pause (attente du coût ou d'un humain)
         self.retrain_since: float | None = None  # heure de la dernière demande de retrain
 
-    def run(self) -> None:
-        print("Orchestrateur : en écoute…")
-        self.bus.listen(self.handle, types=LISTENED)
-
-    def handle(self, event: Event) -> None:
-        if event.source == AGENT:
-            return  # nos propres événements reviennent par Redis : on les ignore
+    def build_router(self):
         handlers = {
             EventType.DRIFT_DETECTED: self.on_drift,
             EventType.COST_ESTIMATED: self.on_cost_estimated,
@@ -61,74 +69,72 @@ class Orchestrator:
             EventType.INCIDENT_RESOLVED: self.on_incident_resolved,
             EventType.APPROVAL_REQUESTED: self.on_approval_requested,
         }
-        handler = handlers.get(event.type)
-        if handler:
-            handler(event)
+        g = StateGraph(RouterState)
+        for type_, handler in handlers.items():
+            g.add_node(type_.value, lambda state, h=handler: h(state["event"]) or {})
+            g.add_edge(type_.value, END)
+        g.add_conditional_edges(START, lambda state: state["event"].type.value, [t.value for t in handlers])
+        return g.compile()
+
+    def run(self) -> None:
+        print("Orchestrateur (LangGraph) : en écoute…")
+        self.bus.listen(self.safe_handle, types=LISTENED)
+
+    def safe_handle(self, event: Event) -> None:
+        """Un événement mal formé ne doit pas arrêter l'écoute."""
+        try:
+            self.handle(event)
+        except Exception:
+            print(f"Orchestrateur : erreur sur {event.type.value}\n{traceback.format_exc()}")
+
+    def handle(self, event: Event) -> None:
+        if event.source == AGENT:
+            return  # nos propres événements reviennent par Redis : on les ignore
+        if event.type in LISTENED:
+            self.router.invoke({"event": event})
+
+    # ------------------------------------------------ fils du workflow de réentraînement
+    def thread(self, request_id: str) -> dict:
+        return {"configurable": {"thread_id": request_id}}
+
+    def waiting_for(self, request_id: str) -> EventType | None:
+        """Événement attendu par le fil, ou None s'il n'est pas en pause."""
+        if request_id not in self.pending:
+            return None
+        paused = self.workflow.get_state(self.thread(request_id)).next
+        return WAITING_FOR.get(paused[0]) if paused else None
+
+    def advance(self, request_id: str, value: Any) -> None:
+        """Démarre ou reprend un fil ; l'oublie quand il est terminé ou en erreur
+        (sinon une demande cassée bloquerait toutes les dérives suivantes)."""
+        try:
+            self.workflow.invoke(value, self.thread(request_id))
+            paused = bool(self.workflow.get_state(self.thread(request_id)).next)
+        except Exception:
+            paused = False
+            self.record("request_failed", {"request_id": request_id})
+            raise
+        finally:
+            if paused:
+                self.pending.add(request_id)
+            else:
+                self.pending.discard(request_id)
+                self.checkpointer.delete_thread(request_id)
 
     # ------------------------------------------------ dérive -> coût -> retrain
     def on_drift(self, event: Event) -> None:
-        p = event.payload
-        if p.get("reason") == "corrupted_input_data":
-            # On n'entraîne jamais sur des données cassées
-            details = {"cause": "corrupted_input_data", "invalid_share": p.get("invalid_share"),
-                       "invalid_reasons": p.get("invalid_reasons")}
-            self.publish(EventType.INCIDENT_OPENED, Severity.CRITICAL, details)
-            self.record("retrain_refused_corrupted_data", details)
-            self.notifier.notify(
-                f"🚨 Données corrompues ({p.get('invalid_share', 0):.0%} de lignes invalides) : "
-                "pas de réentraînement. Il faut vérifier la source des données.")
-            return
-
-        if self.busy():
-            self.record("drift_ignored", {"reason": "une demande est déjà en cours"})
-            return
-
         request_id = uuid.uuid4().hex[:8]
-        self.pending[request_id] = {"step": "cost", "drift": p}
-        self.publish(EventType.COST_ESTIMATE, Severity.INFO, {
-            "request_id": request_id, "requested_by": AGENT, "months": config.DEFAULT_TRAIN_MONTHS})
-        self.record("cost_requested", {"request_id": request_id, "drift_score": p.get("drift_score")})
+        self.advance(request_id, {"request_id": request_id, "drift": event.payload})
 
     def on_cost_estimated(self, event: Event) -> None:
-        p = event.payload
-        request_id = p.get("request_id")
-        request = self.pending.get(request_id)
-        if not request or request["step"] != "cost":
-            return  # une estimation demandée par quelqu'un d'autre
-
-        cost = p["options"]["standard"]["cost"]
-        action = "retrain_over_budget" if p.get("exceeds_budget") else "retrain"
-        rule = self.rules.can(action)
-        details = {"request_id": request_id, "action": action, "rule": rule, "estimated_cost": cost,
-                   "month_total": p.get("month_total"), "budget": p.get("budget")}
-        self.record("retrain_decision", details)
-
-        if rule == AUTO:
-            del self.pending[request_id]
-            self.request_retrain(request_id, approved_by=None)
-        elif rule == APPROVAL:
-            request["step"] = "approval"
-            self.publish(EventType.APPROVAL_REQUESTED, Severity.WARNING, details)
-            self.notifier.ask(
-                f"Dérive détectée. Réentraîner coûte {cost:.2f} € ; ce mois : {p.get('month_total', 0):.2f} € "
-                f"sur un budget de {p.get('budget', 0):.2f} €. On réentraîne ?", request_id)
-        else:  # forbidden
-            del self.pending[request_id]
-            self.notifier.notify(f"⛔ Réentraînement interdit par les règles ({action}).")
+        request_id = event.payload.get("request_id")
+        if self.waiting_for(request_id) == EventType.COST_ESTIMATED:  # sinon : demandée par quelqu'un d'autre
+            self.advance(request_id, Command(resume=event.payload))
 
     def on_approval(self, event: Event) -> None:
-        p = event.payload
-        request_id = p.get("request_id")
-        request = self.pending.get(request_id)
-        if not request or request["step"] != "approval":
-            return
-        del self.pending[request_id]
-        who = p.get("approved_by", "?")
-        if p.get("approved"):
-            self.request_retrain(request_id, approved_by=who)
-        else:
-            self.record("retrain_refused", {"request_id": request_id, "refused_by": who})
-            self.notifier.notify(f"Réentraînement refusé par {who}. La production ne change pas.")
+        request_id = event.payload.get("request_id")
+        if self.waiting_for(request_id) == EventType.APPROVAL_GIVEN:
+            self.advance(request_id, Command(resume=event.payload))
 
     def request_retrain(self, request_id: str, approved_by: str | None) -> None:
         self.retrain_since = self.clock()
@@ -145,6 +151,11 @@ class Orchestrator:
         if self.retrain_since is None:
             return False
         return self.clock() - self.retrain_since < config.RETRAIN_TIMEOUT_MINUTES * 60
+
+    def mermaid(self) -> dict[str, str]:
+        """Les deux graphes au format Mermaid, pour la page web."""
+        return {"Routeur d'événements": self.router.get_graph().draw_mermaid(),
+                "Demande de réentraînement": self.workflow.get_graph().draw_mermaid()}
 
     # ------------------------------------------------ résultats de Retrain
     def on_model_registered(self, event: Event) -> None:
