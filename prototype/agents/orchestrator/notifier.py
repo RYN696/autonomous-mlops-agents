@@ -1,12 +1,17 @@
-"""Messages pour l'humain, affichés sur la page web de l'orchestrateur.
+"""Messages pour l'humain, affichés sur la page web de l'orchestrateur (et sur Discord si configuré).
 
 Ils sont rangés dans la table notifications de Postgres :
 - kind="info"     : simple message (modèle promu, incident...) ;
-- kind="question" : demande de validation, status pending -> approved / refused."""
+- kind="question" : demande de validation, status pending -> approved / refused.
+
+Chaque message peut aussi partir vers un relais (le bot Discord, voir discord_bot.py) avec :
+- level   : info, success, warning, alert (salon des alertes) ou question ;
+- actions : boutons proposés, ex. "report", "dashboard", "data", "ignore", "rollback:<cible>:<actuelle>"."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import (Column, DateTime, Integer, MetaData, String, Table, Text,
                         create_engine, insert, select, update)
@@ -28,24 +33,51 @@ notifications = Table(
 )
 
 
+LEVELS = ("info", "success", "warning", "alert", "question")
+
+
+@dataclass(frozen=True)
+class Message:
+    text: str
+    key: str | None = None        # parcours : request_id ou incident_id
+    level: str = "info"
+    actions: tuple[str, ...] = ()
+
+
+class Relay(Protocol):
+    def post(self, message: Message) -> None: ...
+
+
 class Notifier:
-    def __init__(self, url: str = config.DATABASE_URL):
+    def __init__(self, url: str = config.DATABASE_URL, relay: Relay | None = None):
         self.engine = create_engine(url)
         metadata.create_all(self.engine)
+        self.relay = relay
+
+    def _relay(self, message: Message) -> None:
+        if self.relay is None:
+            return
+        try:
+            self.relay.post(message)
+        except Exception as exc:  # Discord en panne ne doit jamais bloquer un agent
+            print(f"[notification] relais en échec : {type(exc).__name__}: {exc}")
 
     def _insert(self, **values) -> None:
         with self.engine.begin() as conn:
             conn.execute(insert(notifications).values(timestamp=datetime.now(timezone.utc), **values))
 
-    def notify(self, text: str, request_id: str | None = None) -> None:
+    def notify(self, text: str, request_id: str | None = None, level: str = "info",
+               actions: tuple[str, ...] = ()) -> None:
         """request_id : parcours du message (demande de réentraînement ou incident), pour la traçabilité."""
         print(f"[notification] {text}")
         self._insert(kind="info", text=text, request_id=request_id)
+        self._relay(Message(text, request_id, level, tuple(actions)))
 
     def ask(self, text: str, request_id: str) -> None:
-        """Question avec les boutons Valider / Refuser sur la page web."""
+        """Question avec les boutons Valider / Refuser (page web et Discord)."""
         print(f"[question {request_id}] {text}")
         self._insert(kind="question", text=text, request_id=request_id, status="pending")
+        self._relay(Message(text, request_id, "question", ("approve", "refuse", "report")))
 
     def answer(self, request_id: str, approved: bool, who: str) -> bool:
         """Enregistre la réponse. False si la question n'existe pas ou a déjà une réponse."""

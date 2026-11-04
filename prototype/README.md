@@ -65,6 +65,7 @@ curl -X POST http://localhost:9696/predict -H "Content-Type: application/json" -
 | Postgres | localhost:5432 (mlops / mlops) | Journal d'actions et métriques |
 | Redis | localhost:6379 | Bus d'événements entre agents |
 | Interface | http://localhost:8080 | Vue d'ensemble, parcours, agents, journal, validations humaines, graphes LangGraph (port hôte : `ORCHESTRATOR_HOST_PORT` si 8080 est pris) |
+| Discord (facultatif) | vos salons | Mêmes messages que l'interface, avec boutons (voir « Alertes et boutons sur Discord ») |
 
 `docker compose up -d --build` lance aussi les 5 agents, qui ne se parlent que par Redis :
 
@@ -88,6 +89,50 @@ L'interface (servie par l'orchestrateur, code dans `ui/`) se met à jour toute s
   avec le détail JSON de chaque étape et les messages envoyés à l'humain.
 - **Agents** : rôle, événements écoutés et publiés, dernières actions filtrables.
 - **Journal d'actions** : tout le journal, filtrable par agent, action ou texte.
+- **Rapport de coûts** : dépense du mois (entraînement, API), budget, projection de fin de mois.
+  Le bouton « Générer le rapport du mois » fait expliquer ces chiffres par un LLM
+  (`COST_LLM_MODEL`, `llama3.2:3b` par défaut). Le code calcule tous les chiffres et les verdicts ;
+  un texte du LLM qui cite un nombre absent des constats est écarté et remplacé par un texte du code.
+  Le rapport est écrit au journal (`cost_report`) et envoyé sur Discord s'il est configuré.
+
+### Alertes et boutons sur Discord (facultatif)
+
+Si un bot Discord est configuré, chaque message de l'interface part aussi sur Discord :
+
+| Salon | Variable | Messages |
+| --- | --- | --- |
+| `#mlops-alertes` | `DISCORD_ALERTS_CHANNEL_ID` | incidents, demandes d'intervention, données corrompues, budget dépassé, entraînement en échec |
+| `#mlops-agents` | `DISCORD_AGENTS_CHANNEL_ID` | réentraînements, promotions, promotions bloquées, questions à valider |
+
+Un seul salon renseigné : tout y va. Un parcours (dérive ou incident) tient en **un seul
+message**, complété étape par étape (cause → action → résultat). Boutons :
+
+| Bouton | Où | Effet |
+| --- | --- | --- |
+| **Valider / Refuser** | question de budget | comme sur la page web (publie `approval_given`) |
+| **Revenir à vN** | modèle promu | après confirmation, remet l'ancienne version en production (alias MLflow + `/reload` de l'API) |
+| **Ignorer** | données corrompues | aucune action, mais noté au journal |
+| **Rapport**, **Voir les données** | partout | ouvre le parcours dans l'interface |
+| **Tableau de bord** | incidents, données | ouvre Grafana |
+
+Chaque clic est écrit au journal sous l'agent « Humain », avec le nom Discord de la
+personne : il apparaît dans la chronologie du parcours. Les boutons utilisés disparaissent.
+
+Mise en place (une fois, ~5 min) :
+
+1. https://discord.com/developers/applications > **New Application** > onglet **Bot** >
+   **Reset Token** : copier le jeton (aucun « Privileged Gateway Intent » n'est nécessaire).
+2. Onglet **OAuth2 > URL Generator** : cocher `bot`, puis les permissions *View Channels*,
+   *Send Messages*, *Embed Links* ; ouvrir l'URL générée pour inviter le bot sur votre serveur.
+3. Dans Discord : *Paramètres > Avancés > Mode développeur*, puis clic droit sur chaque salon >
+   **Copier l'identifiant**.
+4. Dans `.env` : `DISCORD_BOT_TOKEN`, `DISCORD_ALERTS_CHANNEL_ID`, `DISCORD_AGENTS_CHANNEL_ID`
+   (et `DISCORD_ALERT_MENTION=@here` pour être prévenu), puis `docker compose up -d orchestrator`.
+
+La pastille **Discord** de la vue d'ensemble indique si le bot est connecté. Le bot se
+connecte vers Discord (aucune URL publique nécessaire) ; les liens des boutons pointent vers
+`localhost`, ils s'ouvrent donc sur le PC qui fait tourner la pipeline. Le jeton reste dans
+`.env`, qui n'est pas versionné : ne jamais le mettre dans un commit.
 
 Qualité et Fiabilité utilisent Ollama, lancé **sur le PC** (`ollama serve`, modèles
 `qwen2.5:3b` et `llama3.2:3b`) : les conteneurs le joignent par
@@ -152,6 +197,7 @@ fois, les données du mois sont téléchargées : c'est un peu plus long.
 - Un challenger n'est promu que s'il réduit l'erreur d'au moins 2 % (`MIN_IMPROVEMENT`) :
   la promotion bloquée est le résultat le plus fréquent.
 - Si l'orchestrateur redémarre, les questions en attente expirent : relancer la dérive.
+  Sur Discord, leurs anciens boutons répondent alors que la question a expiré.
 
 ## Tests
 

@@ -4,7 +4,8 @@ Il n'entraîne, ne répare et ne calcule rien lui-même. Chaque événement reç
 passe dans un graphe routeur (un nœud par type d'événement). La demande de
 réentraînement, qui attend le coût puis parfois un humain, est un second
 graphe avec pause/reprise (voir workflow.py). Les décisions suivent
-rules/autonomy.yaml et l'humain est prévenu sur la page web (notifier).
+rules/autonomy.yaml et l'humain est prévenu sur la page web et sur Discord
+(notifier : chaque message a un niveau et des boutons, voir discord_bot.py).
 
 Écoute : drift_detected, cost_estimated, approval_given, model_registered,
          model_promoted, promotion_blocked, action_logged, incident_opened,
@@ -90,7 +91,8 @@ class Orchestrator:
             self.record("request_expired", {"request_id": request_id,
                                             "reason": "orchestrateur redémarré : la demande en pause a été perdue"})
             self.notifier.notify("⌛ Question expirée : l'orchestrateur a redémarré. "
-                                 "L'agent Qualité signalera de nouveau la dérive au prochain contrôle.", request_id)
+                                 "L'agent Qualité signalera de nouveau la dérive au prochain contrôle.", request_id,
+                                 level="warning")
 
     def run(self) -> None:
         print("Orchestrateur (LangGraph) : en écoute…")
@@ -152,8 +154,10 @@ class Orchestrator:
         if self.waiting_for(request_id) == EventType.APPROVAL_GIVEN:
             self.advance(request_id, Command(resume=event.payload))
 
-    def request_retrain(self, request_id: str, approved_by: str | None, period: str | None = None) -> None:
-        """period : mois où Qualité a vu la dérive ; sans lui, Retrain prend les derniers mois de data/."""
+    def request_retrain(self, request_id: str, approved_by: str | None, period: str | None = None,
+                        cause: str | None = None) -> None:
+        """period : mois où Qualité a vu la dérive ; sans lui, Retrain prend les derniers mois de data/.
+        cause : explication de la dérive par l'agent Qualité, reprise dans le message à l'humain."""
         self.retrain_since = self.clock()
         payload = {"request_id": request_id, "requested_by": AGENT, "approved_by": approved_by}
         if period:
@@ -161,7 +165,10 @@ class Orchestrator:
         self.publish(EventType.RETRAIN_REQUESTED, Severity.INFO, payload)
         self.record("retrain_requested", payload)
         by = f", validé par {approved_by}" if approved_by else ""
-        self.notifier.notify(f"🔄 Dérive détectée : réentraînement lancé{by}.", request_id)
+        on = f" sur {period}" if period else ""
+        why = f"\n> {cause.strip()[:400]}" if cause else ""
+        self.notifier.notify(f"🔄 Dérive détectée{on} : réentraînement lancé{by}.{why}", request_id,
+                             actions=("report",))
 
     def busy(self) -> bool:
         """Une demande attend déjà (coût ou humain), ou un retrain tourne encore."""
@@ -196,12 +203,15 @@ class Orchestrator:
     def on_model_promoted(self, event: Event) -> None:
         self.retrain_since = None
         p = event.payload
+        actions: tuple[str, ...] = ("report",)
         if p.get("production_rmse") is None:
             text = f"✅ Premier modèle v{p['challenger_version']} mis en production (RMSE {p['challenger_rmse']:.2f})."
         else:
             text = (f"✅ Modèle v{p['challenger_version']} promu : RMSE {p['challenger_rmse']:.2f} contre "
                     f"{p['production_rmse']:.2f} pour v{p['production_version']} ({p['improvement']:.1%} d'erreur en moins).")
-        self.notifier.notify(text, p.get("request_id"))
+            if p.get("production_version") is not None:  # bouton « Revenir à vN » sur Discord
+                actions += (f"rollback:{p['production_version']}:{p['challenger_version']}",)
+        self.notifier.notify(text, p.get("request_id"), level="success", actions=actions)
 
     def on_promotion_blocked(self, event: Event) -> None:
         self.retrain_since = None
@@ -210,7 +220,7 @@ class Orchestrator:
             f"⛔ Promotion bloquée : v{p['challenger_version']} a un RMSE de {p['challenger_rmse']:.2f} contre "
             f"{p['production_rmse']:.2f} pour la production v{p['production_version']} "
             f"(gain {p['improvement']:.1%}, minimum {p['min_improvement']:.0%}). La production ne change pas.",
-            p.get("request_id"))
+            p.get("request_id"), level="warning", actions=("report",))
 
     def on_action_logged(self, event: Event) -> None:
         p = event.payload
@@ -224,38 +234,42 @@ class Orchestrator:
         if event.source == RETRAIN:
             self.retrain_since = None
             self.notifier.notify(f"🚨 L'entraînement a échoué : {p.get('error')}. La production ne change pas.",
-                                 p.get("request_id"))
+                                 p.get("request_id"), level="alert", actions=("report",))
             return
         if event.source == RELIABILITY:
             self.open_incidents[p.get("incident_id")] = self.clock()
         self.notifier.notify(
             f"🚨 Incident {p.get('incident_id')} : {p.get('cause')} sur {p.get('component')} "
-            f"(niveau {p.get('level')}). L'agent Fiabilité s'en occupe.", p.get("incident_id"))
+            f"(niveau {p.get('level')}). L'agent Fiabilité s'en occupe.", p.get("incident_id"),
+            level="alert", actions=("report", "dashboard"))
 
     def on_incident_resolved(self, event: Event) -> None:
         p = event.payload
         self.open_incidents.pop(p.get("incident_id"), None)
         if p.get("abandoned"):
             self.notifier.notify(f"⚠️ Incident {p.get('incident_id')} clos sans vérification : l'agent Fiabilité a "
-                                 "redémarré. Il rouvrira un incident si la panne est toujours là.", p.get("incident_id"))
+                                 "redémarré. Il rouvrira un incident si la panne est toujours là.", p.get("incident_id"),
+                                 level="warning", actions=("report",))
             return
         actions = ", ".join(a["action"] for a in p.get("actions", [])) or "aucune"
         self.notifier.notify(
             f"✅ Incident {p.get('incident_id')} résolu en {p.get('duration_seconds', 0):.0f} s "
-            f"(actions : {actions}).", p.get("incident_id"))
+            f"(actions : {actions}).", p.get("incident_id"), level="success", actions=("report",))
 
     def on_approval_requested(self, event: Event) -> None:
         p = event.payload
         self.notifier.notify(
             f"🙋 L'agent {event.source} demande une intervention humaine : {p.get('reason')} "
-            f"(incident {p.get('incident_id')}).", p.get("incident_id"))
+            f"(incident {p.get('incident_id')}).", p.get("incident_id"), level="alert",
+            actions=("report", "dashboard"))
 
     # ------------------------------------------------ agent Coûts
     def on_budget_exceeded(self, event: Event) -> None:
         p = event.payload
         self.notifier.notify(
             f"💶 Budget dépassé de {p.get('over_by', 0):.4f} € si on réentraîne. "
-            f"Suggestion de l'agent Coûts : {p.get('suggested_action')}.", p.get("request_id"))
+            f"Suggestion de l'agent Coûts : {p.get('suggested_action')}.", p.get("request_id"),
+            level="alert", actions=("report",))
 
     def on_cost_recommendation(self, event: Event) -> None:
         p = event.payload

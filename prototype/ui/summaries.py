@@ -116,12 +116,21 @@ SUMMARIES: dict[str, Callable[[dict], str]] = {
     "retrain_refused": lambda d: f"Réentraînement refusé par {d.get('refused_by')}",
     "request_expired": lambda d: f"Demande expirée : {d.get('reason')}",
     "request_failed": lambda d: "La demande a échoué (voir les journaux de l'orchestrateur)",
+    # Humain (page web ou Discord)
+    "approval_answered": lambda d: (f"{'Validé' if d.get('approved') else 'Refusé'} par {d.get('by')}"
+                                    + (" sur Discord" if d.get("via") == "discord" else " sur la page web")),
+    "human_rollback": lambda d: (f"Retour manuel à v{d.get('to_version')} (v{d.get('from_version')} retirée) "
+                                 f"par {d.get('by')} : {d.get('reload')}"),
+    "alert_ignored": lambda d: f"Alerte ignorée par {d.get('by')}",
     # Coûts
     "cost_estimated": _cost_estimated,
     "budget_exceeded": lambda d: (f"Budget dépassé de {_num(d.get('over_by'), '.4f')} € — "
                                   f"suggestion : {d.get('suggested_action')}"),
     "cost_recorded": _cost_recorded,
     "cost_recommendation": _recommendation,
+    "cost_report": lambda d: (f"Rapport de coûts {d.get('month')} : {_num(d.get('total'), '.4f')} € sur "
+                              f"{_num(d.get('budget'), '.4f')} € ("
+                              + ("expliqué par le LLM" if d.get("source") == "llm" else "texte du code") + ")"),
     # Retrain
     "retrain_started": lambda d: _with_period("Entraînement du challenger", d),
     "retrain_skipped": lambda d: f"Réentraînement ignoré : {d.get('reason')}",

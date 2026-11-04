@@ -179,6 +179,13 @@ services:
       API_URL: http://api:9696                  # interface : santé de l'API
       OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434}  # interface : état d'Ollama
       DEMO_CONTROLS: "1"                        # interface : page Scénarios (boutons de dérive et de panne)
+      # Discord (facultatif, valeurs dans .env) : messages et boutons sur Discord en plus de la page web
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_ALERTS_CHANNEL_ID: ${DISCORD_ALERTS_CHANNEL_ID:-}
+      DISCORD_AGENTS_CHANNEL_ID: ${DISCORD_AGENTS_CHANNEL_ID:-}
+      DISCORD_ALERT_MENTION: ${DISCORD_ALERT_MENTION:-}
+      UI_PUBLIC_URL: http://localhost:${ORCHESTRATOR_HOST_PORT:-8080}  # liens « Rapport » des messages Discord
+      GRAFANA_PUBLIC_URL: http://localhost:3000                        # lien « Tableau de bord »
       PYTHONUNBUFFERED: "1"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock  # interface : état des conteneurs, page Scénarios

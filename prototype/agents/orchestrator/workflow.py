@@ -57,7 +57,8 @@ def build_retrain_graph(orch: "Orchestrator", checkpointer):
             orch.record("retrain_refused_corrupted_data", details)
             orch.notifier.notify(
                 f"🚨 Données corrompues ({p.get('invalid_share', 0):.0%} de lignes invalides) : "
-                "pas de réentraînement. Il faut vérifier la source des données.", request_id)
+                "pas de réentraînement. Il faut vérifier la source des données.", request_id,
+                level="alert", actions=("data", "ignore", "dashboard"))
             return {"outcome": "corrupted"}
         if orch.busy():
             orch.record("drift_ignored", {"request_id": request_id, "reason": "une demande est déjà en cours"})
@@ -67,7 +68,7 @@ def build_retrain_graph(orch: "Orchestrator", checkpointer):
                                           "incidents": list(orch.open_incidents)})
             orch.notifier.notify("⏸️ Dérive détectée pendant un incident : pas de réentraînement pour "
                                  "l'instant. L'agent Qualité la signalera de nouveau au prochain contrôle.",
-                                 request_id)
+                                 request_id, level="warning")
             return {"outcome": "ignored"}
         return {}
 
@@ -104,7 +105,7 @@ def build_retrain_graph(orch: "Orchestrator", checkpointer):
 
     def retrain(state: RetrainState) -> RetrainState:
         orch.request_retrain(state["request_id"], approved_by=state.get("answer", {}).get("approved_by"),
-                             period=state["drift"].get("period"))
+                             period=state["drift"].get("period"), cause=state["drift"].get("explanation"))
         return {"outcome": "retrain_requested"}
 
     def refused(state: RetrainState) -> RetrainState:
@@ -115,7 +116,7 @@ def build_retrain_graph(orch: "Orchestrator", checkpointer):
 
     def forbidden(state: RetrainState) -> RetrainState:
         orch.notifier.notify(f"⛔ Réentraînement interdit par les règles ({state['decision']['action']}).",
-                             state["request_id"])
+                             state["request_id"], level="warning")
         return {"outcome": "forbidden"}
 
     def after_check(state: RetrainState) -> str:

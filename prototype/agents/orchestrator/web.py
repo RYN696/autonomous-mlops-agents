@@ -7,18 +7,22 @@
 /journal          journal d'actions complet, filtrable
 /graph            les graphes LangGraph de l'orchestrateur (Mermaid)
 /scenarios        banc de test : boutons pour provoquer dérives et pannes, sans terminal
-POST /answer      réponse humaine à une question (publie approval_given)
+/couts            rapport de coûts du mois (chiffres du code, explication par le LLM)
+POST /answer      réponse humaine à une question (publie approval_given, comme le bouton Discord)
 Les gabarits et le style sont dans prototype/ui/.
 """
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, abort, flash, redirect, render_template, request
 
-from common.events import Event, EventType
+from agents.cost import report as cost_report
+from agents.orchestrator.human import HumanActions
+from common import config
 from ui import traces as tr
 from ui.catalog import AGENTS, BY_KEY
 from ui.scenarios import SCENARIOS, ScenarioRunner
@@ -28,12 +32,19 @@ UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 
 
 def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | None = None,
-               runner: ScenarioRunner | None = None) -> Flask:
+               runner: ScenarioRunner | None = None, human: HumanActions | None = None,
+               discord=None) -> Flask:
     app = Flask("orchestrator-web", template_folder=str(UI_DIR / "templates"),
                 static_folder=str(UI_DIR / "static"))
     app.secret_key = "banc-de-test-local"  # messages flash seulement (aucune session utilisateur)
     status = status or PipelineStatus(log.engine)
     runner = runner or ScenarioRunner(log)
+    human = human or HumanActions(notifier, bus, log)
+
+    def services() -> list[dict]:
+        if discord is None:
+            return status.services()
+        return status.services() + [discord.state()]
 
     @app.context_processor
     def common_values():
@@ -73,7 +84,7 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
                  for a in AGENTS]
         recent = tr.recent_traces(log.engine, limit=8)
         incidents = [t for t in tr.recent_traces(log.engine, limit=50, kind=tr.INCIDENT) if t.level in ("run", "wait")]
-        return render_template("overview.html", cards={c["info"].key: c for c in cards}, services=status.services(),
+        return render_template("overview.html", cards={c["info"].key: c for c in cards}, services=services(),
                                production=status.production(), costs=status.month_cost(),
                                questions=notifier.pending(), messages=notifier.latest(12), recent=recent,
                                open_incidents=incidents, in_progress=in_progress(),
@@ -150,14 +161,42 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
             flash(str(exc))
         return redirect("/scenarios")
 
+    report_job = {"running": False, "error": None}
+
+    def make_cost_report() -> None:
+        try:
+            report = cost_report.make_report(log.engine)
+            log.record(cost_report.AGENT, "cost_report", config.MODEL_NAME, report)
+            notifier.notify(cost_report.headline(report), level="info", actions=("costs",))
+            report_job["error"] = None
+        except Exception as exc:  # Postgres injoignable... : affiché sur la page
+            report_job["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            report_job["running"] = False
+
+    @app.get("/couts")
+    def costs():
+        reports = tr.journal(log.engine, agent=cost_report.AGENT, action="cost_report", limit=6)
+        try:
+            live = cost_report.figures(log.engine)
+        except Exception:
+            live = None
+        return render_template("costs.html", reports=reports, live=live, job=report_job,
+                               model=config.COST_LLM_MODEL)
+
+    @app.post("/couts/rapport")
+    def new_cost_report():
+        if not report_job["running"]:  # un seul rapport à la fois (le LLM est lent)
+            report_job["running"] = True
+            threading.Thread(target=make_cost_report, daemon=True).start()
+        return redirect("/couts")
+
     @app.post("/answer")
     def answer():
         request_id = request.form["request_id"]
         approved = request.form.get("choice") == "yes"
         who = request.form.get("who") or "équipe"
-        if notifier.answer(request_id, approved, who):  # False si quelqu'un a déjà répondu
-            bus.publish(Event(type=EventType.APPROVAL_GIVEN, source="page_web", payload={
-                "request_id": request_id, "approved": approved, "approved_by": who}))
+        human.answer(request_id, approved, who)  # sans effet si quelqu'un a déjà répondu (ici ou sur Discord)
         return redirect(request.form.get("next") or "/")
 
     @app.template_global()

@@ -89,6 +89,8 @@ COST_SIZE_HEADROOM = float(os.getenv("COST_SIZE_HEADROOM", "0.3"))
 COST_HOURS_PER_MONTH = float(os.getenv("COST_HOURS_PER_MONTH", "730.0"))
 COST_SERVER_SIZE = os.getenv("COST_SERVER_SIZE", "S")                  # taille actuelle du serveur de l'API (S, M, L)
 COST_TICK_SECONDS = float(os.getenv("COST_TICK_SECONDS", "60"))        # boucle de fond : coût servi, inactivité, taille
+COST_LLM_MODEL = os.getenv("COST_LLM_MODEL", "llama3.2:3b")             # explique le rapport de coûts (ne décide rien)
+COST_LLM_TIMEOUT_SECONDS = float(os.getenv("COST_LLM_TIMEOUT_SECONDS", "120"))
 
 
 # --- LLM (Ollama, 100 % local) : ils prennent les décisions de l'agent Fiabilité (encadrées par guards.py) ---
@@ -111,6 +113,15 @@ JUDGE_MIN_SCORE = int(os.getenv("JUDGE_MIN_SCORE", "6"))        # note minimale 
 ORCHESTRATOR_WEB_PORT = int(os.getenv("ORCHESTRATOR_WEB_PORT", "8080"))  # page web des notifications
 RETRAIN_TIMEOUT_MINUTES = float(os.getenv("RETRAIN_TIMEOUT_MINUTES", "30"))  # sans réponse de Retrain, on considère qu'il a échoué
 INCIDENT_HOLD_MINUTES = float(os.getenv("INCIDENT_HOLD_MINUTES", "30"))  # incident Fiabilité sans clôture : on ne bloque plus le retrain après ce délai
+UI_PUBLIC_URL = os.getenv("UI_PUBLIC_URL", "http://localhost:8080")  # interface vue depuis le PC (liens des boutons Discord)
+GRAFANA_PUBLIC_URL = os.getenv("GRAFANA_PUBLIC_URL", "http://localhost:3000")  # bouton « Tableau de bord »
+
+# --- Discord (facultatif) : un bot relaie les messages de l'interface et porte les boutons ---
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")                  # vide = Discord désactivé
+DISCORD_ALERTS_CHANNEL_ID = os.getenv("DISCORD_ALERTS_CHANNEL_ID", "")  # #mlops-alertes : incidents, données corrompues, budget
+DISCORD_AGENTS_CHANNEL_ID = os.getenv("DISCORD_AGENTS_CHANNEL_ID", "")  # #mlops-agents : réentraînements, promotions, questions
+DISCORD_ALERT_MENTION = os.getenv("DISCORD_ALERT_MENTION", "")          # ex. @here ou <@&id_du_rôle>, en tête des alertes et questions
+DISCORD_THREAD_HOURS = float(os.getenv("DISCORD_THREAD_HOURS", "12"))   # un parcours complète son message Discord pendant ce délai
 
 # --- Agent Qualité en service ---
 QUALITY_CHECK_MINUTES = float(os.getenv("QUALITY_CHECK_MINUTES", "30"))  # intervalle entre deux contrôles

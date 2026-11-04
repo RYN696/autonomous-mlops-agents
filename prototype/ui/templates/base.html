@@ -17,7 +17,8 @@
       {% if pending_count %}<span class="count">{{ pending_count }}</span>{% endif %}</a>
     <a href="/parcours" class="{{ 'on' if path.startswith('/parcours') }}">Parcours</a>
     <a href="/journal" class="{{ 'on' if path.startswith('/journal') }}">Journal d'actions</a>
-    <a href="/scenarios" class="{{ 'on' if path.startswith('/scenarios') }}">Scénarios de test</a>
+    <a href="/couts" class="{{ 'on' if path.startswith('/couts') }}">Rapport de coûts</a>
+    <a href="/scenarios"class="{{ 'on' if path.startswith('/scenarios') }}">Scénarios de test</a>
     {% if has_graph %}<a href="/graph" class="{{ 'on' if path == '/graph' }}">Graphes LangGraph</a>{% endif %}
     <div class="side-title">Agents</div>
     {% for a in agents %}
