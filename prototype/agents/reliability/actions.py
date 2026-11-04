@@ -58,7 +58,15 @@ class ReliabilityActions:
     @property
     def mlflow(self):
         if self._mlflow is None:
+            import os
+
             from mlflow import MlflowClient
+            # Échec rapide si MLflow est en panne (sinon le client MLflow réessaie jusqu'à 7 fois
+            # avec un backoff x2, soit plusieurs minutes bloquées sur un simple snapshot). Ne vaut
+            # que pour ce client (variables d'environnement du PROCESSUS de l'agent Fiabilité) :
+            # les autres agents gardent la résilience par défaut de MLflow pour leurs propres appels.
+            os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", str(config.RELIABILITY_MLFLOW_HTTP_MAX_RETRIES))
+            os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", str(config.RELIABILITY_MLFLOW_HTTP_TIMEOUT_SECONDS))
             self._mlflow = MlflowClient(tracking_uri=config.MLFLOW_TRACKING_URI)
         return self._mlflow
 
@@ -74,8 +82,8 @@ class ReliabilityActions:
             Action.RESTART_MLFLOW: lambda: self._restart(config.MLFLOW_CONTAINER_NAME),
         }
         handler = handlers.get(action)
-        if handler is None:  # ESCALATE : c'est l'agent qui publie l'événement, pas une action système
-            return ActionResult(action.value, False, "action non exécutable ici (gérée par l'agent)")
+        if handler is None:
+            return ActionResult(str(action), False, "action inconnue")
         return self._run(action.value, handler)
 
     def restart_container(self, name: str) -> ActionResult:
@@ -83,6 +91,11 @@ class ReliabilityActions:
 
     def exit_degraded_mode(self) -> ActionResult:
         return self._run("exit_degraded_mode", lambda: self._set_degraded(False))
+
+    def api_logs(self, tail: int = 30) -> str:
+        """Dernières lignes du journal du conteneur de l'API (lues par le LLM)."""
+        raw = self.docker.containers.get(config.API_CONTAINER_NAME).logs(tail=tail)
+        return raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
 
     # --- Snapshot / restauration ---
     def production_version(self) -> str | None:
@@ -107,10 +120,14 @@ class ReliabilityActions:
         def _restore() -> str:
             steps = []
             if snap.production_version and self.production_version() != snap.production_version:
-                self.mlflow.set_registered_model_alias(config.MODEL_NAME, config.PRODUCTION_ALIAS,
-                                                       snap.production_version)
-                self._reload_model()
-                steps.append(f"alias production remis sur la version {snap.production_version}")
+                if self._rolled_back(snap.production_version):
+                    # vu en direct : annuler un rollback remettait en production le modèle cassé
+                    steps.append(f"version {snap.production_version} marquée rolled_back : non restaurée")
+                else:
+                    self.mlflow.set_registered_model_alias(config.MODEL_NAME, config.PRODUCTION_ALIAS,
+                                                           snap.production_version)
+                    self._reload_model()
+                    steps.append(f"alias production remis sur la version {snap.production_version}")
             for name, was_running in snap.containers_running.items():
                 container = self.docker.containers.get(name)
                 if was_running and container.status != "running":
@@ -162,6 +179,10 @@ class ReliabilityActions:
         except Exception:
             return None
         return str(previous.version) if usable(previous) else None
+
+    def _rolled_back(self, version: str) -> bool:
+        versions = self.mlflow.search_model_versions(f"name='{config.MODEL_NAME}'")
+        return any(str(v.version) == str(version) and v.tags.get("rolled_back") == "true" for v in versions)
 
     def _rollback_model(self) -> str:
         current = self.production_version()

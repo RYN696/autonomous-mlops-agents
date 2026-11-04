@@ -1,7 +1,7 @@
 """Banc de pannes pour tester et démontrer l'agent Fiabilité.
 
 À lancer depuis prototype/ (venv activé, stack Docker démarrée, agent lancé
-dans un autre terminal). Chaque panne indique la réaction attendue de l'agent.
+dans un autre terminal). Chaque panne indique une réaction raisonnable ; c'est le LLM de l'agent qui décide.
 
     python -m scripts.inject_failure traffic       # trafic utilisateur simulé (Ctrl+C pour arrêter)
     python -m scripts.inject_failure crash         # arrête l'API
@@ -15,19 +15,20 @@ from __future__ import annotations
 
 import argparse
 import random
+import sys
 import time
 
 import requests
 
 from common import config
 
-EXPECTED = {
-    "crash": "incident critique (api_down) -> humain prévenu -> redémarrage -> résolu",
-    "errors": "incident (cause inconnue) -> redémarrage (efface la panne en mémoire) -> résolu",
-    "latency": "incident (overload) -> mode dégradé -> escalade ; puis `recover` -> résolu",
-    "bad-model": "incident critique (bad_model) -> mode dégradé -> rollback vers la version précédente -> résolu",
-    "mlflow-down": "incident critique (mlflow_down) -> mode dégradé, ni redémarrage ni rollback -> escalade ; "
-                   "puis `recover` -> résolu",
+EXPECTED = {  # réaction raisonnable attendue ; c'est le LLM qui décide
+    "crash": "incident (API arrêtée) -> redémarrage de l'API -> clôture",
+    "errors": "incident -> enquête (journaux) -> redémarrage (efface la panne en mémoire) -> clôture",
+    "latency": "incident (surcharge) -> mode dégradé -> humain prévenu ; puis `recover` -> clôture",
+    "bad-model": "incident (mauvais modèle) -> rollback vers la version précédente -> clôture",
+    "mlflow-down": "incident (MLflow) -> mode dégradé, sans redémarrage ni rollback (le juge les refuse) "
+                   "-> humain prévenu ; puis `recover` -> clôture",
 }
 
 
@@ -142,6 +143,9 @@ def traffic(per_second: float) -> None:
 
 
 def main() -> None:
+    # MLflow affiche des emojis (🏃, 🧪) : la console Windows (cp1252) lèverait UnicodeEncodeError
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Banc de pannes pour l'agent Fiabilité.")
     parser.add_argument("mode", choices=["traffic", "crash", "errors", "latency", "bad-model",
                                          "mlflow-down", "recover"])

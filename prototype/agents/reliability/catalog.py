@@ -1,8 +1,8 @@
 """Catalogue fermé des actions de l'agent Fiabilité.
 
-Seules ces actions existent : le playbook, le LLM et le juge choisissent
-dans cette liste, jamais en dehors. Le risque décide qui a le droit de les
-lancer (en niveau moyen, le LLM n'a accès qu'aux actions à risque faible)."""
+Ce sont les seules actions que l'agent sait exécuter : le LLM choisit parmi
+elles, le juge les évalue. La description et le risque sont donnés aux deux LLM
+comme information (aucune règle de code ne s'en sert pour décider)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,7 +17,6 @@ class Action(str, Enum):
     DEGRADED_MODE = "degraded_mode"
     RESTART_REDIS = "restart_redis"
     RESTART_MLFLOW = "restart_mlflow"
-    ESCALATE = "escalate"
 
 
 @dataclass(frozen=True)
@@ -35,7 +34,6 @@ CATALOG: dict[Action, ActionSpec] = {
     Action.DEGRADED_MODE: ActionSpec("Servir un modèle de secours simple en attendant la réparation", "low", True),
     Action.RESTART_REDIS: ActionSpec("Redémarrer Redis (bus d'événements)", "low", True),
     Action.RESTART_MLFLOW: ActionSpec("Redémarrer MLflow (registre des modèles)", "high", True),
-    Action.ESCALATE: ActionSpec("Prévenir un humain avec le rapport d'incident", "low", True),
 }
 
 LOW_RISK_ACTIONS = frozenset(a for a, spec in CATALOG.items() if spec.risk == "low")
