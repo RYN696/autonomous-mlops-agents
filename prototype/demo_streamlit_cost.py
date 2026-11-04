@@ -33,7 +33,7 @@ st.set_page_config(
 if HAS_AUTOREFRESH:
   st_autorefresh(interval=2000, key="datarefresh")
 
-# --- INITIALISATION DE LA MÉMOIRE DE SESSION (SESSION STATE) ---
+# --- INITIALISATION DE LA MÉMOIRE DE SESSION ---
 if "summary_report" not in st.session_state:
   st.session_state["summary_report"] = None
 if "chat_response" not in st.session_state:
@@ -185,16 +185,32 @@ with col2:
   else:
     st.info("Aucun dépassement de budget en cours.")
 
-st.subheader("💡 2 & 5. Recommandations automatiques (Scale-to-Zero & Taille)")
+# --- NOUVEAU RENDU PROFESSIONNEL POUR LES OBJECTIFS 2 & 5 ---
+st.subheader(
+    "💡 2 & 5. Recommandations automatiques (Scale-to-Zero & Right-Sizing)"
+)
+
 if not df_records.empty:
-  st.json({
-      "Objective 2 (Scale-to-Zero)": (
-          "Idle threshold > 2h -> Action: STOP idle container"
-      ),
-      "Objective 5 (Right-Sizing)": (
-          "vCPU usage 0.3/2.0 -> Recommendation: Downgrade L to S"
-      ),
-  })
+  rec_col1, rec_col2 = st.columns(2)
+
+  with rec_col1:
+    with st.container(border=True):
+      st.markdown("##### 🔌 Objectif 2 : Scale-to-Zero")
+      st.caption("Gestion automatique de l'inactivité des ressources")
+      st.write("**État :** Seuil d'inactivité dépassé (> 2h)")
+      st.warning(
+          "⚡ **Action :** Arrêt automatique du conteneur (`STOP container`)"
+      )
+
+  with rec_col2:
+    with st.container(border=True):
+      st.markdown("##### 📏 Objectif 5 : Right-Sizing")
+      st.caption("Optimisation du dimensionnement vCPU / RAM")
+      st.write("**État :** Charge vCPU faible (0.3 / 2.0 vCPU)")
+      st.info(
+          "📉 **Recommandation :** Redimensionner l'instance (**Downgrade L ➔"
+          " S**)"
+      )
 else:
   st.caption("Aucune recommandation émise pour le moment.")
 
@@ -228,12 +244,10 @@ with col_summary:
   st.subheader("📝 Synthèse Managériale Auto")
   if st.button("💬 Générer la synthèse globale", key="btn_summary"):
     with st.spinner(f"Analyse par Ollama ({ollama_model})..."):
-      # Stockage permanent dans la session
       st.session_state["summary_report"] = explain_cost_with_ollama(
           financial_context, model_name=ollama_model
       )
 
-  # Affichage persistant tant qu'un rapport existe
   if st.session_state["summary_report"]:
     with st.container(border=True):
       st.caption("📌 **Rapport Décisionnel FinOps** • Proposé par Phi-3")
@@ -248,14 +262,12 @@ with col_chat:
   if st.button("🤖 Obtenir une réponse", key="btn_ask"):
     if user_q.strip():
       with st.spinner("Réflexion de l'assistant..."):
-        # Stockage permanent dans la session
         st.session_state["chat_response"] = ask_cost_assistant(
             financial_context, user_q, model_name=ollama_model
         )
     else:
       st.warning("Veuillez saisir une question.")
 
-  # Affichage persistant de la réponse au chat
   if st.session_state["chat_response"]:
     with st.container(border=True):
       st.caption("💡 **Analyse Expert MLOps**")
