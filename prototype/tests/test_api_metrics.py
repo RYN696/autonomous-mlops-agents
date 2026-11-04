@@ -57,3 +57,17 @@ def test_metrics_endpoint_is_not_self_counted():
     client.get("/metrics")
     client.get("/metrics")
     assert sample(client, "api_requests_total", endpoint="/metrics") == 0
+
+
+def test_user_requests_exclude_reliability_probes(monkeypatch):
+    client = api.app.test_client()
+    monkeypatch.setattr(api, "load_model", lambda: None)
+    api.state.update(model=FakeModel(), version="7", error=None)
+
+    users0 = sample(client, "api_user_requests_total")
+    client.post("/predict", json=PAYLOAD)                                         # utilisateur
+    client.post("/predict", json=PAYLOAD, headers={"X-Bypass-Degraded": "1"})     # sonde Fiabilité
+    client.get("/health")
+    assert sample(client, "api_user_requests_total") == users0 + 1
+
+    api.state.update(model=None, version=None, error=None)

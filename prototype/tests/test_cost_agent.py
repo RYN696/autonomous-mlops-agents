@@ -225,35 +225,130 @@ def test_unknown_events_are_ignored():
     assert bus.events == [] and log.rows == []
 
 
-from unittest.mock import MagicMock
-from agents.cost.service import CostService
+from agents.cost.service import CostService, user_requests
+
 
 # ---------- service ----------
-def test_cost_service_run_tick_executes_all_tasks():
-    mock_agent = MagicMock()
-    mock_bus = MagicMock()
+class Clock:
+    """Même heure pour le service (secondes) et l'agent (datetime)."""
 
-    service = CostService(agent=mock_agent, bus=mock_bus)
+    def __init__(self, start=NOW.timestamp()):
+        self.t = start
+
+    def seconds(self):
+        return self.t
+
+    def datetime(self):
+        return datetime.fromtimestamp(self.t)
+
+
+def make_service(cpu=0.0, requests=0.0, idle_minutes=30.0, size="S"):
+    clock, collector, usage = Clock(), FakeCollector({"api": cpu}), {"count": requests}
+    cfg = CostConfig(cost_per_cpu_second=0.01, monthly_budget=10.0, idle_minutes=idle_minutes,
+                     size_headroom=0.3, hours_per_month=730.0)
+    bus, log = FakeBus(), FakeLog()
+    agent = CostAgent(InMemoryCostStore(), bus, log, cfg, collector=collector, clock=clock.datetime)
+    service = CostService(agent=agent, bus=bus, interval_seconds=60, time_func=clock.seconds,
+                          api_usage=lambda: usage["count"], model="taxi", container="api", server_size=size)
+    return service, clock, collector, usage, bus, log
+
+
+def recommendations(bus):
+    return [e.payload["action"] for e in bus.events if e.type == EventType.COST_RECOMMENDATION]
+
+
+def test_run_tick_enregistre_le_cout_de_l_api_servie():
+    service, clock, collector, _, _, log = make_service(cpu=100.0)
+    service.run_tick()  # 1er tour : base de comparaison
+    clock.t += 60
+    collector.values["api"] = 130.0
     service.run_tick()
 
-    # Vérification que les 3 fonctions clés sont bien appelées lors d'un cycle (tick)
-    mock_agent.record_serving_sample.assert_called_once()
-    mock_agent.check_idle.assert_called_once()
-    mock_agent.recommend_server_size.assert_called_once()
+    serving = [d for _, action, d in log.rows if action == "cost_recorded" and d["kind"] == "serving"]
+    assert serving == [{"kind": "serving", "container": "api", "cpu_seconds": 30.0, "cost": pytest.approx(0.3)}]
 
 
-def test_cost_service_start_and_stop():
-    mock_agent = MagicMock()
-    mock_bus = MagicMock()
+def test_scale_to_zero_une_seule_fois_par_periode_d_inactivite():
+    service, clock, _, usage, bus, _ = make_service(idle_minutes=30)
+    for _ in range(40):  # 40 min sans requête utilisateur
+        service.run_tick()
+        clock.t += 60
+    assert recommendations(bus) == ["scale_to_zero"]
 
-    service = CostService(agent=mock_agent, bus=mock_bus, interval_seconds=0.1)
-    
-    # Démarrage de la boucle d'arrière-plan
-    service.start()
+    usage["count"] += 5  # le trafic revient...
+    service.run_tick()
+    for _ in range(31):  # ...puis 31 min de silence : nouvelle recommandation
+        clock.t += 60
+        service.run_tick()
+    assert recommendations(bus) == ["scale_to_zero", "scale_to_zero"]
+
+
+def test_api_active_pas_de_scale_to_zero():
+    service, clock, _, usage, bus, _ = make_service(idle_minutes=30)
+    for _ in range(40):
+        usage["count"] += 1
+        service.run_tick()
+        clock.t += 60
+    assert "scale_to_zero" not in recommendations(bus)
+
+
+def test_taille_du_serveur_recommandee_quand_elle_change():
+    service, clock, collector, usage, bus, _ = make_service(cpu=0.0, size="S")
+    service.run_tick()
+    for _ in range(3):  # 1,5 vCPU utilisé en continu sur un serveur S (1 vCPU)
+        usage["count"] += 1
+        clock.t += 60
+        collector.values["api"] += 90.0
+        service.run_tick()
+
+    assert recommendations(bus) == ["upsize"]  # une seule fois, pas à chaque tour
+    rec = [e.payload for e in bus.events if e.type == EventType.COST_RECOMMENDATION][0]
+    assert rec["recommended"] == "M"
+
+
+def test_une_tache_en_erreur_n_empeche_pas_les_autres():
+    service, clock, collector, _, bus, _ = make_service(idle_minutes=0)
+
+    def broken(container):
+        raise RuntimeError("Docker injoignable")
+
+    collector.cpu_seconds = broken
+    service.run_tick()
+    assert recommendations(bus) == ["scale_to_zero"]
+
+
+def test_user_requests_lit_le_compteur_sans_les_sondes():
+    class Http:
+        def get(self, url, timeout):
+            class Resp:
+                text = ("# TYPE api_user_requests_total counter\napi_user_requests_total 12.0\n"
+                        '# TYPE api_requests_total counter\napi_requests_total{endpoint="/predict",status="200"} 99.0\n')
+
+                def raise_for_status(self):
+                    pass
+            return Resp()
+
+    assert user_requests("http://api", Http()) == 12.0
+
+
+def test_cost_service_start_n_est_pas_bloque_par_l_ecoute():
+    import threading
+
+    service, *_ = make_service()
+    release = threading.Event()
+
+    class BlockingBus:
+        def listen(self, handler, types=None):
+            release.wait(5)  # comme Redis : ne rend jamais la main
+
+    service.bus = BlockingBus()
+    service.interval_seconds = 0.1
+    service.start()  # ne doit pas bloquer
     assert service._running is True
     assert service._thread is not None and service._thread.is_alive()
+    assert service._listener.is_alive()
 
-    # Arrêt propre
     service.stop()
+    release.set()
     assert service._running is False
     assert not service._thread.is_alive()

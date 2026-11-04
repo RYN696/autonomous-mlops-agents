@@ -81,6 +81,8 @@ DEFAULT_CPU_SECONDS_PER_MONTH_OF_DATA = float(
 COST_IDLE_MINUTES = float(os.getenv("COST_IDLE_MINUTES", "30.0"))
 COST_SIZE_HEADROOM = float(os.getenv("COST_SIZE_HEADROOM", "0.3"))
 COST_HOURS_PER_MONTH = float(os.getenv("COST_HOURS_PER_MONTH", "730.0"))
+COST_SERVER_SIZE = os.getenv("COST_SERVER_SIZE", "S")                  # taille actuelle du serveur de l'API (S, M, L)
+COST_TICK_SECONDS = float(os.getenv("COST_TICK_SECONDS", "60"))        # boucle de fond : coût servi, inactivité, taille
 
 
 # --- LLM (Ollama, 100 % local) : ils prennent les décisions de l'agent Fiabilité (encadrées par guards.py) ---

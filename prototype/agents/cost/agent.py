@@ -56,6 +56,7 @@ class CostAgent:
         self.collector = collector
         self.clock = clock
         self._last_cpu: Dict[str, float] = {}
+        self.last_cpu_delta: Optional[float] = None  # CPU du dernier record_serving_sample (None : pas de base)
 
     def on_event(self, event: Event) -> None:
         payload = {**event.payload, "model": event.model}
@@ -150,8 +151,10 @@ class CostAgent:
         previous = self._last_cpu.get(container)
         self._last_cpu[container] = current
         if previous is None or current < previous:  # 1er appel ou conteneur redémarré
+            self.last_cpu_delta = None
             return 0.0
         delta = current - previous
+        self.last_cpu_delta = delta
         value = calculator.cost(delta, self.config.cost_per_cpu_second)
         month = calculator.month_key(self.clock())
         self.store.add(model, month, "serving", delta, value)
