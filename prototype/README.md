@@ -55,6 +55,25 @@ Arrêter : `docker compose down` (ajouter `-v` pour tout effacer, y compris les 
 | Redis | localhost:6379 | Bus d'événements entre agents |
 | Orchestrateur | http://localhost:8080 | Messages et validations humaines ; graphes LangGraph sur `/graph` (port hôte : `ORCHESTRATOR_HOST_PORT` si 8080 est pris) |
 
+`docker compose up -d --build` lance aussi les 5 agents, qui ne se parlent que par Redis :
+
+| Agent | Service | Rôle dans la boucle |
+| --- | --- | --- |
+| Qualité | `quality` | Contrôle 2023-02 toutes les 10 min et après chaque promotion ; publie `drift_detected` avec le mois contrôlé |
+| Orchestrateur | `orchestrator` | Graphe LangGraph : coût → règle → validation humaine → `retrain_requested` ; pas de retrain pendant un incident |
+| Coûts | `cost` | Estime le coût, signale le dépassement de budget, enregistre le coût de chaque entraînement |
+| Retrain | `retrain` | Entraîne sur le mois de la dérive, promeut ou bloque le challenger |
+| Fiabilité | `reliability` | Surveille l'API, MLflow, Redis ; redémarre / recrée les conteneurs (socket Docker monté) |
+
+Qualité et Fiabilité utilisent Ollama, lancé **sur le PC** (`ollama serve`, modèles
+`qwen2.5:3b`, `llama3.2:3b`, `llama3.1:8b`) : les conteneurs le joignent par
+`host.docker.internal`. Une démo se déclenche depuis les conteneurs, par exemple :
+
+```bash
+docker compose exec quality python -m agents.quality --year 2023 --month 2 --scenario drift
+python -m scripts.inject_failure crash      # depuis le PC : l'agent Fiabilité répare
+```
+
 ## Tests
 
 ```bash

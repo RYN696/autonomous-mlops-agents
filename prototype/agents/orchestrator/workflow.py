@@ -1,6 +1,6 @@
 """Graphe LangGraph d'une demande de réentraînement : un fil (thread) par request_id.
 
-    check_data ─┬─ données corrompues / demande déjà en cours ─► fin
+    check_data ─┬─ données corrompues / demande déjà en cours / incident en cours ─► fin
                 └─► ask_cost ─► wait_cost ─► decide ─┬─ auto ──────────────────────────► retrain
                                                      ├─ approval ─► ask_human ─► wait_human ─┬─► retrain
                                                      │                                       └─► refused
@@ -58,6 +58,11 @@ def build_retrain_graph(orch: "Orchestrator", checkpointer):
         if orch.busy():
             orch.record("drift_ignored", {"reason": "une demande est déjà en cours"})
             return {"outcome": "ignored"}
+        if orch.incident_in_progress():
+            orch.record("drift_ignored", {"reason": "incident en cours", "incidents": list(orch.open_incidents)})
+            orch.notifier.notify("⏸️ Dérive détectée pendant un incident : pas de réentraînement pour "
+                                 "l'instant. L'agent Qualité la signalera de nouveau au prochain contrôle.")
+            return {"outcome": "ignored"}
         return {}
 
     def ask_cost(state: RetrainState) -> RetrainState:
@@ -92,7 +97,8 @@ def build_retrain_graph(orch: "Orchestrator", checkpointer):
         return {"answer": interrupt({"waiting_for": EventType.APPROVAL_GIVEN.value})}
 
     def retrain(state: RetrainState) -> RetrainState:
-        orch.request_retrain(state["request_id"], approved_by=state.get("answer", {}).get("approved_by"))
+        orch.request_retrain(state["request_id"], approved_by=state.get("answer", {}).get("approved_by"),
+                             period=state["drift"].get("period"))
         return {"outcome": "retrain_requested"}
 
     def refused(state: RetrainState) -> RetrainState:

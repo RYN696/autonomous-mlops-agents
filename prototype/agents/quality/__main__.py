@@ -5,6 +5,7 @@ Usage (depuis prototype/) :
     python -m agents.quality --year 2023 --month 2 --scenario drift       # dérive fabriquée
     python -m agents.quality --year 2023 --month 2 --scenario corrupted   # données corrompues
     ajouter --dry-run pour ne rien publier (ni Redis, ni Postgres)
+    python -m agents.quality --year 2023 --month 2 --watch                # service (docker compose)
 """
 from __future__ import annotations
 
@@ -61,9 +62,26 @@ def main(argv=None) -> None:
     p.add_argument("--scenario", choices=["normal", "drift", "corrupted"], default="normal")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--no-llm", action="store_true", help="désactive l'explication par LLM")
+    p.add_argument("--watch", action="store_true",
+                   help="service : contrôle toutes les QUALITY_CHECK_MINUTES et à chaque model_promoted")
     args = p.parse_args(argv)
-
     mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
+
+    if args.watch:
+        import logging
+
+        from agents.quality.watch import watch
+        from common.events import EventBus
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+        print(f"Agent Qualité : contrôle de {args.year}-{args.month:02d} toutes les "
+              f"{config.QUALITY_CHECK_MINUTES:g} min et à chaque model_promoted")
+        watch(lambda: check_once(args), EventBus(), config.QUALITY_CHECK_MINUTES * 60)
+    else:
+        check_once(args)
+
+
+def check_once(args) -> None:
+    # Rechargé à chaque contrôle : le modèle de production peut avoir changé
     model = mlflow.sklearn.load_model(f"models:/{config.MODEL_NAME}@{config.PRODUCTION_ALIAS}")
 
     reference = read_dataframe(args.ref_year, args.ref_month)
@@ -72,6 +90,8 @@ def main(argv=None) -> None:
     raw, clean = apply_scenario(args.scenario, raw, clean)
 
     event = run_check(model, reference, clean, raw)
+    # Mois contrôlé : l'orchestrateur le donne à Retrain comme période d'entraînement
+    event.payload["period"] = f"{args.year}-{args.month:02d}"
     event = add_explanation(event, use_llm=not args.no_llm)
 
     if args.dry_run:

@@ -98,3 +98,7 @@ JUDGE_MIN_SCORE = int(os.getenv("JUDGE_MIN_SCORE", "6"))        # note minimale 
 # --- Orchestrateur ---
 ORCHESTRATOR_WEB_PORT = int(os.getenv("ORCHESTRATOR_WEB_PORT", "8080"))  # page web des notifications
 RETRAIN_TIMEOUT_MINUTES = float(os.getenv("RETRAIN_TIMEOUT_MINUTES", "30"))  # sans réponse de Retrain, on considère qu'il a échoué
+INCIDENT_HOLD_MINUTES = float(os.getenv("INCIDENT_HOLD_MINUTES", "30"))  # incident Fiabilité sans clôture : on ne bloque plus le retrain après ce délai
+
+# --- Agent Qualité en service ---
+QUALITY_CHECK_MINUTES = float(os.getenv("QUALITY_CHECK_MINUTES", "30"))  # intervalle entre deux contrôles

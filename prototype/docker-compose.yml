@@ -83,6 +83,49 @@ services:
       - postgres
     restart: unless-stopped
 
+  quality:
+    build: .
+    command: python -m agents.quality --year 2023 --month 2 --watch
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
+      QUALITY_OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434}  # Ollama tourne sur le PC
+      QUALITY_CHECK_MINUTES: "10"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # pour Linux (déjà défini sous Docker Desktop)
+    depends_on:
+      - mlflow
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  reliability:
+    build: .
+    command: python -m agents.reliability
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
+      API_URL: http://api:9696
+      OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434}
+      COMPOSE_PROJECT_NAME: prototype  # recreate_api relance le service api de CE projet compose
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # restart / recreate des conteneurs autorisés
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - api
+      - mlflow
+      - redis
+      - postgres
+    restart: unless-stopped
+
   orchestrator:
     build: .
     command: python -m agents.orchestrator

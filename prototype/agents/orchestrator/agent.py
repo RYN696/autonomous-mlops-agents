@@ -8,7 +8,8 @@ rules/autonomy.yaml et l'humain est prévenu sur la page web (notifier).
 
 Écoute : drift_detected, cost_estimated, approval_given, model_registered,
          model_promoted, promotion_blocked, action_logged, incident_opened,
-         incident_resolved, approval_requested
+         incident_resolved, approval_requested, budget_exceeded,
+         cost_recommendation
 Publie : cost_estimate, retrain_requested, approval_requested,
          training_completed, incident_opened (données corrompues)
 """
@@ -29,12 +30,13 @@ from common import config
 from common.events import Event, EventType, Severity
 
 RETRAIN = "agent_retrain"  # nom de source de l'agent Retrain
+RELIABILITY = "agent_fiabilite"
 
 LISTENED = [
     EventType.DRIFT_DETECTED, EventType.COST_ESTIMATED, EventType.APPROVAL_GIVEN,
     EventType.MODEL_REGISTERED, EventType.MODEL_PROMOTED, EventType.PROMOTION_BLOCKED,
     EventType.ACTION_LOGGED, EventType.INCIDENT_OPENED, EventType.INCIDENT_RESOLVED,
-    EventType.APPROVAL_REQUESTED,
+    EventType.APPROVAL_REQUESTED, EventType.BUDGET_EXCEEDED, EventType.COST_RECOMMENDATION,
 ]
 
 
@@ -55,6 +57,7 @@ class Orchestrator:
         self.router = self.build_router()
         self.pending: set[str] = set()  # request_id des fils en pause (attente du coût ou d'un humain)
         self.retrain_since: float | None = None  # heure de la dernière demande de retrain
+        self.open_incidents: dict[str, float] = {}  # incidents Fiabilité en cours -> heure d'ouverture
 
     def build_router(self):
         handlers = {
@@ -68,6 +71,8 @@ class Orchestrator:
             EventType.INCIDENT_OPENED: self.on_incident_opened,
             EventType.INCIDENT_RESOLVED: self.on_incident_resolved,
             EventType.APPROVAL_REQUESTED: self.on_approval_requested,
+            EventType.BUDGET_EXCEEDED: self.on_budget_exceeded,
+            EventType.COST_RECOMMENDATION: self.on_cost_recommendation,
         }
         g = StateGraph(RouterState)
         for type_, handler in handlers.items():
@@ -136,9 +141,12 @@ class Orchestrator:
         if self.waiting_for(request_id) == EventType.APPROVAL_GIVEN:
             self.advance(request_id, Command(resume=event.payload))
 
-    def request_retrain(self, request_id: str, approved_by: str | None) -> None:
+    def request_retrain(self, request_id: str, approved_by: str | None, period: str | None = None) -> None:
+        """period : mois où Qualité a vu la dérive ; sans lui, Retrain prend les derniers mois de data/."""
         self.retrain_since = self.clock()
         payload = {"request_id": request_id, "requested_by": AGENT, "approved_by": approved_by}
+        if period:
+            payload["period"] = period
         self.publish(EventType.RETRAIN_REQUESTED, Severity.INFO, payload)
         self.record("retrain_requested", payload)
         by = f", validé par {approved_by}" if approved_by else ""
@@ -151,6 +159,13 @@ class Orchestrator:
         if self.retrain_since is None:
             return False
         return self.clock() - self.retrain_since < config.RETRAIN_TIMEOUT_MINUTES * 60
+
+    def incident_in_progress(self) -> bool:
+        """Un incident Fiabilité est ouvert (et pas oublié depuis INCIDENT_HOLD_MINUTES) :
+        on ne réentraîne pas pendant que l'API ou MLflow est en panne."""
+        limit = self.clock() - config.INCIDENT_HOLD_MINUTES * 60
+        self.open_incidents = {i: t for i, t in self.open_incidents.items() if t > limit}
+        return bool(self.open_incidents)
 
     def mermaid(self) -> dict[str, str]:
         """Les deux graphes au format Mermaid, pour la page web."""
@@ -196,12 +211,15 @@ class Orchestrator:
             self.retrain_since = None
             self.notifier.notify(f"🚨 L'entraînement a échoué : {p.get('error')}. La production ne change pas.")
             return
+        if event.source == RELIABILITY:
+            self.open_incidents[p.get("incident_id")] = self.clock()
         self.notifier.notify(
             f"🚨 Incident {p.get('incident_id')} : {p.get('cause')} sur {p.get('component')} "
             f"(niveau {p.get('level')}). L'agent Fiabilité s'en occupe.")
 
     def on_incident_resolved(self, event: Event) -> None:
         p = event.payload
+        self.open_incidents.pop(p.get("incident_id"), None)
         actions = ", ".join(a["action"] for a in p.get("actions", [])) or "aucune"
         self.notifier.notify(
             f"✅ Incident {p.get('incident_id')} résolu en {p.get('duration_seconds', 0):.0f} s "
@@ -212,6 +230,18 @@ class Orchestrator:
         self.notifier.notify(
             f"🙋 L'agent {event.source} demande une intervention humaine : {p.get('reason')} "
             f"(incident {p.get('incident_id')}).")
+
+    # ------------------------------------------------ agent Coûts
+    def on_budget_exceeded(self, event: Event) -> None:
+        p = event.payload
+        self.notifier.notify(
+            f"💶 Budget dépassé de {p.get('over_by', 0):.4f} € si on réentraîne. "
+            f"Suggestion de l'agent Coûts : {p.get('suggested_action')}.")
+
+    def on_cost_recommendation(self, event: Event) -> None:
+        p = event.payload
+        detail = ", ".join(f"{k} : {v}" for k, v in p.items() if k != "model")
+        self.notifier.notify(f"💡 Recommandation de l'agent Coûts ({detail}). Aucune action automatique.")
 
     # ------------------------------------------------ outils
     def publish(self, type_: EventType, severity: Severity, payload: dict[str, Any]) -> None:

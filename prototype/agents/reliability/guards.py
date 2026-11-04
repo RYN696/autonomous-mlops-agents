@@ -97,11 +97,16 @@ DEPENDENCY_OF = {"mlflow_indisponible": "mlflow_ok", "redis_indisponible": "redi
                  "postgres_indisponible": "postgres_ok"}
 
 
+STOPPED = {"exited", "dead"}
+
+
 def checked_cause(cause: str, m: dict, s: Signals | None) -> str:
     """Cause du LLM contredite par les signaux -> "inconnue" (vu en direct : "api_arretee"
     pour une API qui tournait et répondait, avec 30 % d'erreurs)."""
     if s is None:
         return cause
+    if s.container_status in STOPPED:
+        return "api_arretee"  # vu en direct (agent en conteneur) : "surcharge" pour une API arrêtée
     if cause == "api_arretee" and s.container_status == "running" and m.get("api_joignable"):
         cause = "inconnue"
     if cause in DEPENDENCY_OF and getattr(s, DEPENDENCY_OF[cause]) is True:

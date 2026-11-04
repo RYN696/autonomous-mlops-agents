@@ -98,6 +98,14 @@ def test_derive_dans_le_budget_lance_le_retrain(orch):
     retrain = orch.bus.last(EventType.RETRAIN_REQUESTED)
     assert retrain.payload["requested_by"] == AGENT
     assert retrain.payload["approved_by"] is None
+    assert "period" not in retrain.payload  # Retrain choisit alors les derniers mois de data/
+
+
+def test_retrain_sur_le_mois_de_la_derive(orch):
+    orch.handle(drift(period="2023-02"))
+    orch.handle(cost_answer(orch.bus.last(EventType.COST_ESTIMATE).payload["request_id"]))
+
+    assert orch.bus.last(EventType.RETRAIN_REQUESTED).payload["period"] == "2023-02"
 
 
 def test_derive_hors_budget_attend_la_validation(orch, notifier):
@@ -220,3 +228,40 @@ def test_page_graph_affiche_les_deux_graphes(tmp_path, notifier, orch):
     html = client.get("/graph").get_data(as_text=True)
 
     assert "wait_human" in html and "drift_detected" in html
+
+
+# ---------- coordination avec Fiabilité et Coûts ----------
+def incident(type_, incident_id="inc-1"):
+    return ev(type_, "agent_fiabilite", Severity.CRITICAL, incident_id=incident_id,
+              cause="api_arretee", component="api", level="critical")
+
+
+def test_pas_de_retrain_pendant_un_incident(orch, notifier):
+    orch.handle(incident(EventType.INCIDENT_OPENED))
+    orch.handle(drift())
+    assert EventType.COST_ESTIMATE not in orch.bus.types()
+    assert "pendant un incident" in notifier.latest()[0]["text"]
+
+    orch.handle(incident(EventType.INCIDENT_RESOLVED))
+    orch.handle(drift())
+    assert EventType.COST_ESTIMATE in orch.bus.types()
+
+
+def test_incident_jamais_clos_ne_bloque_pas_indefiniment(tmp_path, notifier):
+    now = [1000.0]
+    orch = Orchestrator(bus=FakeBus(), log=ActionLog(url=f"sqlite:///{tmp_path / 'log.db'}"),
+                        notifier=notifier, rules=Rules(RULES), clock=lambda: now[0])
+    orch.handle(incident(EventType.INCIDENT_OPENED))
+    now[0] += 31 * 60  # INCIDENT_HOLD_MINUTES = 30 par défaut
+    orch.handle(drift())
+    assert EventType.COST_ESTIMATE in orch.bus.types()
+
+
+def test_alertes_de_l_agent_couts_relayees(orch, notifier):
+    orch.handle(ev(EventType.BUDGET_EXCEEDED, "agent_cost", over_by=0.29,
+                   suggested_action="Réduire la période à 1 mois"))
+    assert "Réduire la période à 1 mois" in notifier.latest()[0]["text"]
+
+    orch.handle(ev(EventType.COST_RECOMMENDATION, "agent_cost", model="taxi-duration",
+                   recommendation="scale_to_zero", monthly_saving=3.2))
+    assert "scale_to_zero" in notifier.latest()[0]["text"]

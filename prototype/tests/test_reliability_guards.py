@@ -49,6 +49,12 @@ def test_cause_contradicted_by_signals_becomes_unknown():
     assert guards.checked_cause("mauvais_modele", OK, Signals()) == "mauvais_modele"
 
 
+def test_stopped_container_is_always_api_down():
+    # vu en direct : mesures encore "joignables" juste après l'arrêt -> le LLM a dit "surcharge"
+    assert guards.checked_cause("surcharge", OK, Signals(container_status="exited")) == "api_arretee"
+    assert guards.checked_cause("surcharge", OK, Signals(container_status="restarting")) == "surcharge"
+
+
 def test_model_cause_becomes_mlflow_when_mlflow_is_down():
     down = Signals(mlflow_ok=False)
     assert guards.checked_cause("mauvais_modele", OK, down) == "mlflow_indisponible"
