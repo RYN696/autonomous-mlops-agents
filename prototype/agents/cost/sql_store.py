@@ -64,5 +64,6 @@ class SqlCostStore:
                 .where(model_costs.c.model == model,
                        model_costs.c.kind == "training",
                        model_costs.c.months.is_not(None),
-                       model_costs.c.months > 0))
+                       model_costs.c.months > 0)
+                .order_by(model_costs.c.id))  # du plus ancien au plus récent (détection de pic)
             return [(float(c), int(m)) for c, m in rows]

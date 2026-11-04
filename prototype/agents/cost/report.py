@@ -85,6 +85,9 @@ def figures(engine, now: datetime | None = None) -> dict[str, Any]:
         recommendation = conn.execute(select(action_log.c.details).where(
             action_log.c.agent == AGENT, action_log.c.action == "cost_recommendation",
             action_log.c.timestamp >= start).order_by(action_log.c.id.desc()).limit(1)).scalar()
+        anomalies = conn.execute(select(action_log.c.details).where(
+            action_log.c.agent == AGENT, action_log.c.action == "cost_anomaly",
+            action_log.c.timestamp >= start).order_by(action_log.c.id.desc())).scalars().all()
         budget = current_budget(conn)
 
     training, serving = float(by_kind.get("training", 0.0)), float(by_kind.get("serving", 0.0))
@@ -105,6 +108,7 @@ def figures(engine, now: datetime | None = None) -> dict[str, Any]:
         "top_trainings": [{"request_id": d.get("request_id"), "cost": d.get("cost"),
                            "cpu_seconds": d.get("cpu_seconds")} for d in top],
         "recommendation": recommendation,
+        "anomalies": len(anomalies), "last_anomaly": anomalies[0] if anomalies else None,
     }
 
 
@@ -129,6 +133,11 @@ def findings(f: dict[str, Any]) -> list[str]:
     if f["budget_exceeded_alerts"]:
         lines.append(f"Alertes de dépassement de budget ce mois : {f['budget_exceeded_alerts']} "
                      "(chaque réentraînement demande une validation humaine)")
+    if f.get("anomalies"):
+        a = f["last_anomaly"] or {}
+        what = ("un entraînement" if a.get("kind") == "training" else "l'API servie")
+        lines.append(f"Pics de coût ce mois : {f['anomalies']} ; le dernier : {what} à {a.get('ratio')} fois "
+                     "le coût habituel (alerte seulement, aucune action automatique)")
     rec = f.get("recommendation") or {}
     if rec.get("action") == "scale_to_zero":
         lines.append("Conseil calculé : arrêter l'API quand elle ne sert pas (scale-to-zero)")

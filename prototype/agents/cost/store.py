@@ -85,5 +85,5 @@ class PostgresCostStore:
     def training_history(self, model):
         with self._conn.transaction(), self._conn.cursor() as cur:
             cur.execute("SELECT cpu_seconds, months FROM model_costs "
-                        "WHERE model = %s AND kind = 'training' AND months > 0", (model,))
+                        "WHERE model = %s AND kind = 'training' AND months > 0 ORDER BY id", (model,))
             return [(float(c), int(m)) for c, m in cur.fetchall()]

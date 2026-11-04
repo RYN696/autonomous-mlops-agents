@@ -41,5 +41,10 @@ class CostConfig:
     idle_minutes: float = field(default_factory=lambda: config.COST_IDLE_MINUTES)
     # marge de sécurité pour la recommandation de taille
     size_headroom: float = field(default_factory=lambda: config.COST_SIZE_HEADROOM)
+    # détection de pic de coût (anomaly.py)
+    spike_factor: float = field(default_factory=lambda: config.COST_SPIKE_FACTOR)
+    spike_window: int = field(default_factory=lambda: config.COST_SPIKE_WINDOW)
+    spike_min_history: int = field(default_factory=lambda: config.COST_SPIKE_MIN_HISTORY)
+    spike_min_vcpus: float = field(default_factory=lambda: config.COST_SPIKE_MIN_VCPUS)
     sizes: tuple[ServerSize, ...] = DEFAULT_SIZES
     hours_per_month: float = field(default_factory=lambda: config.COST_HOURS_PER_MONTH)

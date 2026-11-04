@@ -53,6 +53,15 @@ def _recommendation(d: dict) -> str:
             f"({_num(d.get('monthly_saving'), '.2f')} €/mois)")
 
 
+def _anomaly(d: dict) -> str:
+    if d.get("kind") == "training":
+        return (f"Pic de coût à l'entraînement : {_num(d.get('ratio'), '.1f')}× l'habitude "
+                f"({_num(d.get('value'), '.0f')} s de CPU par mois de données contre {_num(d.get('typical'), '.0f')} s), "
+                f"{_num(d.get('extra_cost'), '.4f')} € en trop")
+    return (f"Pic de charge de l'API : {_num(d.get('ratio'), '.1f')}× l'habitude "
+            f"({_num(d.get('value'), '.2f')} vCPU contre {_num(d.get('typical'), '.2f')})")
+
+
 def _promoted(d: dict) -> str:
     if d.get("message"):  # explication de l'agent Retrain (LLM vérifié ou modèle de texte)
         return d["message"]
@@ -128,6 +137,7 @@ SUMMARIES: dict[str, Callable[[dict], str]] = {
                                   f"suggestion : {d.get('suggested_action')}"),
     "cost_recorded": _cost_recorded,
     "cost_recommendation": _recommendation,
+    "cost_anomaly": _anomaly,
     "cost_report": lambda d: (f"Rapport de coûts {d.get('month')} : {_num(d.get('total'), '.4f')} € sur "
                               f"{_num(d.get('budget'), '.4f')} € ("
                               + ("expliqué par le LLM" if d.get("source") == "llm" else "texte du code") + ")"),

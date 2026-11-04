@@ -96,6 +96,11 @@ COST_SIZE_HEADROOM = float(os.getenv("COST_SIZE_HEADROOM", "0.3"))
 COST_HOURS_PER_MONTH = float(os.getenv("COST_HOURS_PER_MONTH", "730.0"))
 COST_SERVER_SIZE = os.getenv("COST_SERVER_SIZE", "S")                  # taille actuelle du serveur de l'API (S, M, L)
 COST_TICK_SECONDS = float(os.getenv("COST_TICK_SECONDS", "60"))        # boucle de fond : coût servi, inactivité, taille
+# Détection de pic de coût (règle déterministe, aucune action automatique : une alerte)
+COST_SPIKE_FACTOR = float(os.getenv("COST_SPIKE_FACTOR", "3.0"))          # pic = N fois la médiane habituelle
+COST_SPIKE_WINDOW = int(os.getenv("COST_SPIKE_WINDOW", "10"))             # nombre de mesures passées comparées
+COST_SPIKE_MIN_HISTORY = int(os.getenv("COST_SPIKE_MIN_HISTORY", "3"))    # en dessous, pas assez d'historique pour juger
+COST_SPIKE_MIN_VCPUS = float(os.getenv("COST_SPIKE_MIN_VCPUS", "0.1"))    # API servie : en dessous, bruit de fond ignoré
 COST_LLM_MODEL = os.getenv("COST_LLM_MODEL", "llama3.2:3b")             # explique le rapport de coûts (ne décide rien)
 COST_LLM_TIMEOUT_SECONDS = float(os.getenv("COST_LLM_TIMEOUT_SECONDS", "120"))
 # Commandes en langage naturel (canal #mlops-agents de l'interface) : le LLM comprend, le code vérifie

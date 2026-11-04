@@ -40,6 +40,7 @@ LISTENED = [
     EventType.MODEL_REGISTERED, EventType.MODEL_PROMOTED, EventType.PROMOTION_BLOCKED,
     EventType.ACTION_LOGGED, EventType.INCIDENT_OPENED, EventType.INCIDENT_RESOLVED,
     EventType.APPROVAL_REQUESTED, EventType.BUDGET_EXCEEDED, EventType.COST_RECOMMENDATION,
+    EventType.COST_ANOMALY,
 ]
 
 
@@ -80,6 +81,7 @@ class Orchestrator:
             EventType.APPROVAL_REQUESTED: self.on_approval_requested,
             EventType.BUDGET_EXCEEDED: self.on_budget_exceeded,
             EventType.COST_RECOMMENDATION: self.on_cost_recommendation,
+            EventType.COST_ANOMALY: self.on_cost_anomaly,
         }
         g = StateGraph(RouterState)
         for type_, handler in handlers.items():
@@ -334,6 +336,21 @@ class Orchestrator:
         p = event.payload
         detail = ", ".join(f"{k} : {v}" for k, v in p.items() if k != "model")
         self.notifier.notify(f"💡 Recommandation de l'agent Coûts ({detail}). Aucune action automatique.")
+
+    def on_cost_anomaly(self, event: Event) -> None:
+        """Pic de coût : une alerte pour l'humain, aucune action automatique (rules/autonomy.yaml)."""
+        p = event.payload
+        if p.get("kind") == "training":
+            what = (f"l'entraînement{f' v' + str(p['version']) if p.get('version') else ''} a coûté "
+                    f"{p.get('ratio')}× plus que d'habitude par mois de données "
+                    f"({p.get('value'):.0f} s de CPU contre {p.get('typical'):.0f} s habituellement, "
+                    f"{p.get('extra_cost', 0):.4f} € en trop)")
+        else:
+            what = (f"l'API consomme {p.get('ratio')}× plus de CPU que d'habitude "
+                    f"({p.get('value'):.2f} vCPU contre {p.get('typical'):.2f}, "
+                    f"{p.get('cost_per_hour', 0):.4f} €/h)")
+        self.notifier.notify(f"📈 Pic de coût : {what}. À vérifier : {p.get('hint')}. Aucune action automatique.",
+                             p.get("request_id"), level="warning", actions=("report",))
 
     # ------------------------------------------------ outils
     def publish(self, type_: EventType, severity: Severity, payload: dict[str, Any]) -> None:

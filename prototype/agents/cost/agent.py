@@ -8,6 +8,7 @@
   - cost_estimated       réponse à cost_estimate (options standard / spot)
   - budget_exceeded      si coût du mois + estimation > budget
   - cost_recommendation  taille de serveur, scale-to-zero (calcul seulement)
+  - cost_anomaly         pic de coût (entraînement ou API servie), voir anomaly.py
 
 L'agent ne bloque JAMAIS un job : c'est l'Orchestrateur qui décide
 (validation humaine). Aucun appel à un LLM ici.
@@ -15,10 +16,11 @@ L'agent ne bloque JAMAIS un job : c'est l'Orchestrateur qui décide
 from __future__ import annotations
 
 import math
+from collections import deque
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Protocol
 
-from . import calculator, pricing, recommender
+from . import anomaly, calculator, pricing, recommender
 from .collector import CpuCollector
 from .settings import CostConfig
 from .store import CostStore
@@ -60,6 +62,8 @@ class CostAgent:
         self.budget = budget or (lambda: self.config.monthly_budget)
         self._last_cpu: Dict[str, float] = {}
         self.last_cpu_delta: Optional[float] = None  # CPU du dernier record_serving_sample (None : pas de base)
+        self._serving_load: deque = deque(maxlen=self.config.spike_window)  # vCPU des derniers tours
+        self._serving_spike = False  # pic de l'API déjà signalé : une alerte par épisode
 
     def on_event(self, event: Event) -> None:
         payload = {**event.payload, "model": event.model}
@@ -138,11 +142,17 @@ class CostAgent:
         cpu = float(payload["cpu_seconds"])
         value = calculator.cost(cpu, self.config.cost_per_cpu_second)
         month = calculator.month_key(self.clock())
+        # comparé AVANT l'ajout : l'historique ne contient que les entraînements passés
+        found = anomaly.training_spike(self.store.training_history(model), cpu,
+                                       payload.get("months"), self.config)
         self.store.add(model, month, "training", cpu, value, payload.get("months"))
         details = {"kind": "training", "cpu_seconds": cpu, "cost": value}
         if payload.get("request_id"):  # traçabilité : demande de réentraînement d'origine
             details["request_id"] = payload["request_id"]
         self._record("cost_recorded", model, details)
+        if found:
+            self._anomaly(model, {**found, "cost": value, "months": payload.get("months"),
+                                  "version": payload.get("version"), "request_id": payload.get("request_id")})
         return value
 
     # ---- coût de l'API servie (à appeler périodiquement) ----
@@ -166,6 +176,29 @@ class CostAgent:
             {"kind": "serving", "container": container, "cpu_seconds": delta, "cost": value},
         )
         return value
+
+    # ---- pic de charge de l'API servie (appelé à chaque tour de la boucle de fond) ----
+    def check_serving_spike(self, model: str, used_vcpus: float) -> Optional[dict]:
+        """Une alerte au début d'un pic, pas une par tour ; la charge suivante redevenue
+        normale clôt l'épisode. La mesure rejoint ensuite l'historique : si la charge reste
+        haute, elle devient la nouvelle normale au bout de quelques tours."""
+        found = anomaly.serving_spike(list(self._serving_load), used_vcpus, self.config)
+        self._serving_load.append(used_vcpus)
+        if found is None:
+            self._serving_spike = False
+            return None
+        if self._serving_spike:
+            return None
+        self._serving_spike = True
+        hourly = used_vcpus * 3600 * self.config.cost_per_cpu_second
+        found = {**found, "cost_per_hour": round(hourly, 6),
+                 "typical_cost_per_hour": round(found["typical"] * 3600 * self.config.cost_per_cpu_second, 6)}
+        self._anomaly(model, found)
+        return found
+
+    def _anomaly(self, model: str, details: dict) -> None:
+        self._publish(EventType.COST_ANOMALY, model, details)
+        self._record("cost_anomaly", model, details)
 
     # ---- recommandations (aucune action sur l'infrastructure) ----
     def recommend_server_size(self, model: str, used_vcpus: float, current_size: str) -> dict:

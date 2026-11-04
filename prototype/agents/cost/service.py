@@ -9,7 +9,8 @@ Deux fils tournent en même temps :
       1. coût de l'API servie (CPU du conteneur lu dans Docker) ;
       2. inactivité de l'API (requêtes utilisateurs, sondes de Fiabilité exclues)
          -> recommandation scale-to-zero, une fois par période d'inactivité ;
-      3. taille du serveur d'après le CPU mesuré -> recommandation si elle change.
+      3. taille du serveur d'après le CPU mesuré -> recommandation si elle change ;
+      4. pic de charge de l'API (CPU bien au-dessus d'habitude) -> alerte cost_anomaly.
 Les recommandations ne sont envoyées qu'une fois : l'humain les voit sur la page
 de l'orchestrateur, inutile de les répéter à chaque tour.
 """
@@ -85,7 +86,7 @@ class CostService:
         self._last_size: tuple[str, str] | None = None  # (action, taille) de la dernière recommandation
 
     def run_tick(self) -> None:
-        """Exécute un passage des 3 tâches périodiques. Une tâche en erreur n'empêche pas les autres."""
+        """Exécute un passage des 4 tâches périodiques. Une tâche en erreur n'empêche pas les autres."""
         now = self.time_func()
         elapsed = now - self._last_tick if self._last_tick is not None else None
         self._last_tick = now
@@ -99,6 +100,11 @@ class CostService:
             self.check_idle(now)
         except Exception as err:
             log.error("Erreur lors de check_idle: %s", err)
+        try:
+            if used_vcpus is not None:
+                self.agent.check_serving_spike(self.model, used_vcpus)
+        except Exception as err:
+            log.error("Erreur lors de check_serving_spike: %s", err)
         try:
             if used_vcpus is not None:
                 self.check_size(used_vcpus)

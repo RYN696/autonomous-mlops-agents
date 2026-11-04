@@ -73,7 +73,7 @@ curl -X POST http://localhost:9696/predict -H "Content-Type: application/json" -
 | --- | --- | --- |
 | Qualité | `quality` | Contrôle 2023-02 toutes les 10 min et après chaque promotion ; publie `drift_detected` avec le mois contrôlé |
 | Orchestrateur | `orchestrator` | Graphe LangGraph : coût → règle → validation humaine → `retrain_requested` ; pas de retrain pendant un incident |
-| Coûts | `cost` | Estime le coût, signale le dépassement de budget, enregistre le coût de chaque entraînement |
+| Coûts | `cost` | Estime le coût, signale le dépassement de budget, enregistre le coût de chaque entraînement, signale les pics de coût |
 | Retrain | `retrain` | Entraîne sur le mois de la dérive, promeut ou bloque le challenger |
 | Fiabilité | `reliability` | Surveille l'API, MLflow, Redis ; redémarre / recrée les conteneurs (socket Docker monté) |
 
@@ -266,6 +266,15 @@ L'agent coûts écoute `cost_estimate` et `training_completed`, publie des
 événements typés définis dans `common/events.py` et journalise ses décisions
 dans `common/action_log.py`. Ses tarifs, seuils et budget sont configurables
 dans `common/config.py`.
+
+**Pic de coût** (`agents/cost/anomaly.py`, événement `cost_anomaly`) : règle déterministe, sans LLM.
+Une mesure est un pic si elle vaut au moins `COST_SPIKE_FACTOR` (3) fois la médiane des
+`COST_SPIKE_WINDOW` (10) mesures précédentes, avec au moins `COST_SPIKE_MIN_HISTORY` (3) mesures.
+- entraînement : CPU **par mois de données** (3 mois ne sont pas un pic face à 1 mois) ;
+- API servie : vCPU moyen d'un tour de boucle, au-dessus de `COST_SPIKE_MIN_VCPUS` (0,1) pour
+  ignorer le bruit de fond ; une seule alerte par épisode.
+L'orchestrateur prévient l'humain (page web, Discord) avec la cause à vérifier ; aucune action
+automatique. Les pics du mois apparaissent dans le rapport de coûts.
 
 ## Règles de travail
 
