@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Journal d'actions{% endblock %}
+{% block content %}
+<h1>Journal d'actions</h1>
+<p class="sub">Toutes les décisions et actions de tous les agents, telles qu'écrites dans Postgres.</p>
+<form class="filters" method="get" action="/journal">
+  <select name="agent">
+    <option value="">Tous les agents</option>
+    {% for a in agents %}<option value="{{ a.log_name }}" {{ 'selected' if args.agent == a.log_name }}>{{ a.name }}</option>{% endfor %}
+  </select>
+  <input name="action" placeholder="action exacte" value="{{ args.action or '' }}">
+  <input name="q" placeholder="chercher (id, cause, version…)" value="{{ args.q or '' }}">
+  <button>Filtrer</button>
+  {% if args.agent or args.action or args.q %}<a href="/journal">effacer</a>{% endif %}
+</form>
+<div class="panel"><div id="journal" {{ 'data-live' if not request.args.before }} class="scroll">{{ m.log_table(rows) }}</div></div>
+{% if next_before %}<p><a href="?{% for k, v in args.items() if v %}{{ k }}={{ v|urlencode }}&{% endfor %}before={{ next_before }}">Actions plus anciennes →</a></p>{% endif %}
+{% endblock %}

@@ -98,6 +98,8 @@ class RetrainAgent:
             "requested_by": event.payload.get("requested_by", event.source),
             "approved_by": event.payload.get("approved_by"),
         }
+        if event.payload.get("request_id"):  # traçabilité : relie l'entraînement à la demande de l'orchestrateur
+            who["request_id"] = event.payload["request_id"]
         try:
             if event.payload.get("period"):
                 months = parse_period(event.payload["period"])

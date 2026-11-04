@@ -15,6 +15,7 @@ from common.events import EventBus
 notifier = Notifier()
 log = ActionLog()
 orchestrator = Orchestrator(bus=EventBus(), log=log, notifier=notifier)
+orchestrator.expire_orphans()
 threading.Thread(target=orchestrator.run, daemon=True).start()
 
 create_app(notifier, EventBus(), log, orchestrator).run(host="0.0.0.0", port=config.ORCHESTRATOR_WEB_PORT)

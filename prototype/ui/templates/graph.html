@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Graphes LangGraph{% endblock %}
+{% block content %}
+<h1>Graphes LangGraph de l'orchestrateur</h1>
+<p class="sub">Le routeur aiguille chaque événement ; la demande de réentraînement se met en pause
+  (<code>interrupt</code>) en attendant le coût puis, si la règle l'exige, un humain.</p>
+<div class="panel">
+  <h2>Demandes en cours</h2>
+  <div id="threads" data-live>
+  {% for p in in_progress %}<p><a href="/parcours/{{ p.id }}" class="mono">{{ p.id }}</a> — {{ p.step }}</p>
+  {% else %}<p class="empty">Aucun fil en pause.</p>{% endfor %}
+  </div>
+</div>
+{% for title, code in graphs.items() %}
+  <div class="panel scroll"><h2>{{ title }}</h2><pre class="mermaid">{{ code }}</pre></div>
+{% endfor %}
+{% endblock %}
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true });</script>
+{% endblock %}

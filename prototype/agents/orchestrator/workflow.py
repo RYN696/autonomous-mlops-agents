@@ -44,24 +44,30 @@ class RetrainState(TypedDict, total=False):
 
 def build_retrain_graph(orch: "Orchestrator", checkpointer):
     def check_data(state: RetrainState) -> RetrainState:
-        p = state["drift"]
+        p, request_id = state["drift"], state["request_id"]
+        # Traçabilité : relie la demande au contrôle de l'agent Qualité (check_id)
+        orch.record("drift_received", {"request_id": request_id, "check_id": p.get("check_id"),
+                                       "reason": p.get("reason"), "drift_score": p.get("drift_score"),
+                                       "period": p.get("period")})
         if p.get("reason") == "corrupted_input_data":
             # On n'entraîne jamais sur des données cassées
-            details = {"cause": "corrupted_input_data", "invalid_share": p.get("invalid_share"),
-                       "invalid_reasons": p.get("invalid_reasons")}
+            details = {"request_id": request_id, "cause": "corrupted_input_data",
+                       "invalid_share": p.get("invalid_share"), "invalid_reasons": p.get("invalid_reasons")}
             orch.publish(EventType.INCIDENT_OPENED, Severity.CRITICAL, details)
             orch.record("retrain_refused_corrupted_data", details)
             orch.notifier.notify(
                 f"🚨 Données corrompues ({p.get('invalid_share', 0):.0%} de lignes invalides) : "
-                "pas de réentraînement. Il faut vérifier la source des données.")
+                "pas de réentraînement. Il faut vérifier la source des données.", request_id)
             return {"outcome": "corrupted"}
         if orch.busy():
-            orch.record("drift_ignored", {"reason": "une demande est déjà en cours"})
+            orch.record("drift_ignored", {"request_id": request_id, "reason": "une demande est déjà en cours"})
             return {"outcome": "ignored"}
         if orch.incident_in_progress():
-            orch.record("drift_ignored", {"reason": "incident en cours", "incidents": list(orch.open_incidents)})
+            orch.record("drift_ignored", {"request_id": request_id, "reason": "incident en cours",
+                                          "incidents": list(orch.open_incidents)})
             orch.notifier.notify("⏸️ Dérive détectée pendant un incident : pas de réentraînement pour "
-                                 "l'instant. L'agent Qualité la signalera de nouveau au prochain contrôle.")
+                                 "l'instant. L'agent Qualité la signalera de nouveau au prochain contrôle.",
+                                 request_id)
             return {"outcome": "ignored"}
         return {}
 
@@ -104,11 +110,12 @@ def build_retrain_graph(orch: "Orchestrator", checkpointer):
     def refused(state: RetrainState) -> RetrainState:
         who = state["answer"].get("approved_by", "?")
         orch.record("retrain_refused", {"request_id": state["request_id"], "refused_by": who})
-        orch.notifier.notify(f"Réentraînement refusé par {who}. La production ne change pas.")
+        orch.notifier.notify(f"Réentraînement refusé par {who}. La production ne change pas.", state["request_id"])
         return {"outcome": "refused"}
 
     def forbidden(state: RetrainState) -> RetrainState:
-        orch.notifier.notify(f"⛔ Réentraînement interdit par les règles ({state['decision']['action']}).")
+        orch.notifier.notify(f"⛔ Réentraînement interdit par les règles ({state['decision']['action']}).",
+                             state["request_id"])
         return {"outcome": "forbidden"}
 
     def after_check(state: RetrainState) -> str:

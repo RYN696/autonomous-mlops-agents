@@ -136,10 +136,10 @@ class CostAgent:
         value = calculator.cost(cpu, self.config.cost_per_cpu_second)
         month = calculator.month_key(self.clock())
         self.store.add(model, month, "training", cpu, value, payload.get("months"))
-        self._record(
-            "cost_recorded", model,
-            {"kind": "training", "cpu_seconds": cpu, "cost": value},
-        )
+        details = {"kind": "training", "cpu_seconds": cpu, "cost": value}
+        if payload.get("request_id"):  # traçabilité : demande de réentraînement d'origine
+            details["request_id"] = payload["request_id"]
+        self._record("cost_recorded", model, details)
         return value
 
     # ---- coût de l'API servie (à appeler périodiquement) ----

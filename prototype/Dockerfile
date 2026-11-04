@@ -9,4 +9,5 @@ COPY common ./common
 COPY pipeline ./pipeline
 COPY agents ./agents
 COPY rules ./rules
+COPY ui ./ui
 ENV PYTHONPATH=/app

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Parcours{% endblock %}
+{% block content %}
+<h1>Parcours</h1>
+<p class="sub">Chaque dérive ou incident, suivi d'un agent à l'autre jusqu'à sa conclusion.</p>
+<div class="tabs">
+  <a href="/parcours" class="{{ 'on' if not kind }}">Tous</a>
+  <a href="/parcours?type=retrain" class="{{ 'on' if kind == 'retrain' }}">Réentraînements</a>
+  <a href="/parcours?type=incident" class="{{ 'on' if kind == 'incident' }}">Incidents</a>
+</div>
+<div class="panel"><div id="traces" data-live class="scroll">{{ m.trace_table(traces) }}</div></div>
+{% endblock %}

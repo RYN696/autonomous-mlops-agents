@@ -37,9 +37,10 @@ class Notifier:
         with self.engine.begin() as conn:
             conn.execute(insert(notifications).values(timestamp=datetime.now(timezone.utc), **values))
 
-    def notify(self, text: str) -> None:
+    def notify(self, text: str, request_id: str | None = None) -> None:
+        """request_id : parcours du message (demande de réentraînement ou incident), pour la traçabilité."""
         print(f"[notification] {text}")
-        self._insert(kind="info", text=text)
+        self._insert(kind="info", text=text, request_id=request_id)
 
     def ask(self, text: str, request_id: str) -> None:
         """Question avec les boutons Valider / Refuser sur la page web."""
@@ -58,4 +59,25 @@ class Notifier:
     def latest(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:
             rows = conn.execute(select(notifications).order_by(notifications.c.id.desc()).limit(limit))
+            return [dict(r._mapping) for r in rows]
+
+    def for_request(self, request_id: str) -> list[dict[str, Any]]:
+        """Messages et questions d'une demande, du plus ancien au plus récent."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(notifications).where(notifications.c.request_id == request_id)
+                                .order_by(notifications.c.id))
+            return [dict(r._mapping) for r in rows]
+
+    def expire_pending(self) -> list[str]:
+        """Questions encore ouvertes -> "expired" ; renvoie leurs request_id."""
+        with self.engine.begin() as conn:
+            ids = [r[0] for r in conn.execute(select(notifications.c.request_id)
+                                              .where(notifications.c.status == "pending"))]
+            conn.execute(update(notifications).where(notifications.c.status == "pending").values(status="expired"))
+        return ids
+
+    def pending(self) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(notifications).where(notifications.c.status == "pending")
+                                .order_by(notifications.c.id.desc()))
             return [dict(r._mapping) for r in rows]

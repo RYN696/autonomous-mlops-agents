@@ -1,0 +1,77 @@
+{% macro chip(info) %}<span class="chip"><span class="dot {{ info.color }}"></span>{{ info.name }}</span>{% endmacro %}
+
+{% macro badge(t) %}<span class="badge l-{{ t.level }}">{{ t.status }}</span>{% endmacro %}
+
+{% macro container_badge(container) %}
+  {%- if container -%}
+    <span class="badge {{ 'l-ok' if container.status == 'running' else ('l-warn' if container.status in ('restarting', 'paused') else 'l-bad') }}" style="margin-left:auto">{{ {'running': 'en marche', 'exited': 'arrêté', 'restarting': 'redémarre', 'paused': 'en pause', 'dead': 'mort', 'created': 'créé'}.get(container.status, container.status) }}</span>
+  {%- endif -%}
+{% endmacro %}
+
+{# Nœud de la carte SVG #}
+{% macro node(card, x, y) %}
+  {% set st = card.container.status if card.container else 'unknown' %}
+  <g class="node {{ card.info.color }}">
+    <a href="/agents/{{ card.info.key }}">
+      <rect x="{{ x }}" y="{{ y }}" width="220" height="76" rx="9"/>
+      <rect class="stripe" x="{{ x }}" y="{{ y }}" width="5" height="76" rx="2"/>
+      <circle class="st-{{ st }}" cx="{{ x + 204 }}" cy="{{ y + 18 }}" r="5"><title>{{ st }}</title></circle>
+      <text x="{{ x + 18 }}" y="{{ y + 24 }}">{{ card.info.name }}</text>
+      <text class="small" x="{{ x + 18 }}" y="{{ y + 45 }}">{{ card.last.action if card.last else 'aucune action' }}</text>
+      <text class="small" x="{{ x + 18 }}" y="{{ y + 63 }}">{% if card.last %}<tspan data-ts="{{ card.last.ts|iso }}" data-rel></tspan> · {% endif %}{{ card.count_24h or 0 }} actions / 24 h</text>
+    </a>
+  </g>
+{% endmacro %}
+
+{% macro question(n, next=None) %}
+  <div class="question">
+    <p>{{ n.text }}</p>
+    <form class="answer" method="post" action="/answer">
+      <input type="hidden" name="request_id" value="{{ n.request_id }}">
+      <input type="hidden" name="who">
+      {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+      <button class="yes" name="choice" value="yes">Valider</button>
+      <button class="no" name="choice" value="no">Refuser</button>
+      <a href="/parcours/{{ n.request_id }}">voir le parcours</a>
+    </form>
+  </div>
+{% endmacro %}
+
+{% macro trace_table(traces) %}
+  {% if traces %}
+  <table>
+    <thead><tr><th class="nowrap">Début</th><th>Parcours</th><th>État</th><th>Agents</th><th class="nowrap">Durée</th></tr></thead>
+    <tbody>
+    {% for t in traces %}
+      <tr>
+        <td class="nowrap"><span data-ts="{{ t.started|iso }}"></span></td>
+        <td><a href="/parcours/{{ t.id }}">{{ t.title }}</a><div class="muted mono">{{ 'demande' if t.kind == 'retrain' else 'incident' }} {{ t.id }}</div></td>
+        <td>{{ badge(t) }}</td>
+        <td>{% for a in t.agents %}<span class="dot {{ a.color }}" title="{{ a.name }}"></span> {% endfor %}</td>
+        <td class="nowrap">{{ t.duration|duration }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">Aucun parcours pour l'instant : il en apparaît un à chaque dérive ou incident.</p>{% endif %}
+{% endmacro %}
+
+{% macro log_table(rows, show_agent=True) %}
+  {% if rows %}
+  <table>
+    <thead><tr><th class="nowrap">Heure</th>{% if show_agent %}<th>Agent</th>{% endif %}<th>Action</th><th>Ce qui s'est passé</th><th>Parcours</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td class="nowrap"><span data-ts="{{ r.timestamp|iso }}"></span></td>
+        {% if show_agent %}<td class="nowrap">{{ chip(r.info) }}</td>{% endif %}
+        <td><code>{{ r.action }}</code></td>
+        <td>{{ r.summary }}
+          <details id="d-{{ r.id }}"><summary>détails</summary><pre class="json">{{ r.details|pretty }}</pre></details></td>
+        <td class="nowrap">{% if r.trace_id %}<a href="/parcours/{{ r.trace_id }}" class="mono">{{ r.trace_id }}</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">Aucune action.</p>{% endif %}
+{% endmacro %}

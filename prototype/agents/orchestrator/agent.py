@@ -81,6 +81,17 @@ class Orchestrator:
         g.add_conditional_edges(START, lambda state: state["event"].type.value, [t.value for t in handlers])
         return g.compile()
 
+    def expire_orphans(self) -> None:
+        """Au démarrage : les fils en pause d'avant le redémarrage sont perdus (checkpointer en
+        mémoire). Leurs questions ne doivent pas rester sur la page avec des boutons sans effet."""
+        for request_id in self.notifier.expire_pending():
+            if request_id in self.pending:
+                continue
+            self.record("request_expired", {"request_id": request_id,
+                                            "reason": "orchestrateur redémarré : la demande en pause a été perdue"})
+            self.notifier.notify("⌛ Question expirée : l'orchestrateur a redémarré. "
+                                 "L'agent Qualité signalera de nouveau la dérive au prochain contrôle.", request_id)
+
     def run(self) -> None:
         print("Orchestrateur (LangGraph) : en écoute…")
         self.bus.listen(self.safe_handle, types=LISTENED)
@@ -150,7 +161,7 @@ class Orchestrator:
         self.publish(EventType.RETRAIN_REQUESTED, Severity.INFO, payload)
         self.record("retrain_requested", payload)
         by = f", validé par {approved_by}" if approved_by else ""
-        self.notifier.notify(f"🔄 Dérive détectée : réentraînement lancé{by}.")
+        self.notifier.notify(f"🔄 Dérive détectée : réentraînement lancé{by}.", request_id)
 
     def busy(self) -> bool:
         """Une demande attend déjà (coût ou humain), ou un retrain tourne encore."""
@@ -178,7 +189,7 @@ class Orchestrator:
         p = event.payload
         self.publish(EventType.TRAINING_COMPLETED, Severity.INFO, {
             "cpu_seconds": p.get("training_seconds", 0.0), "months": len(p.get("period") or []) or None,
-            "version": p.get("version")})
+            "version": p.get("version"), "request_id": p.get("request_id")})
 
     def on_model_promoted(self, event: Event) -> None:
         self.retrain_since = None
@@ -188,7 +199,7 @@ class Orchestrator:
         else:
             text = (f"✅ Modèle v{p['challenger_version']} promu : RMSE {p['challenger_rmse']:.2f} contre "
                     f"{p['production_rmse']:.2f} pour v{p['production_version']} ({p['improvement']:.1%} d'erreur en moins).")
-        self.notifier.notify(text)
+        self.notifier.notify(text, p.get("request_id"))
 
     def on_promotion_blocked(self, event: Event) -> None:
         self.retrain_since = None
@@ -196,26 +207,28 @@ class Orchestrator:
         self.notifier.notify(
             f"⛔ Promotion bloquée : v{p['challenger_version']} a un RMSE de {p['challenger_rmse']:.2f} contre "
             f"{p['production_rmse']:.2f} pour la production v{p['production_version']} "
-            f"(gain {p['improvement']:.1%}, minimum {p['min_improvement']:.0%}). La production ne change pas.")
+            f"(gain {p['improvement']:.1%}, minimum {p['min_improvement']:.0%}). La production ne change pas.",
+            p.get("request_id"))
 
     def on_action_logged(self, event: Event) -> None:
         p = event.payload
         if p.get("action") == "retrain_skipped":
             self.retrain_since = None
-            self.notifier.notify(f"Réentraînement ignoré par Retrain : {p.get('reason')}.")
+            self.notifier.notify(f"Réentraînement ignoré par Retrain : {p.get('reason')}.", p.get("request_id"))
 
     # ------------------------------------------------ incidents (Fiabilité, Retrain)
     def on_incident_opened(self, event: Event) -> None:
         p = event.payload
         if event.source == RETRAIN:
             self.retrain_since = None
-            self.notifier.notify(f"🚨 L'entraînement a échoué : {p.get('error')}. La production ne change pas.")
+            self.notifier.notify(f"🚨 L'entraînement a échoué : {p.get('error')}. La production ne change pas.",
+                                 p.get("request_id"))
             return
         if event.source == RELIABILITY:
             self.open_incidents[p.get("incident_id")] = self.clock()
         self.notifier.notify(
             f"🚨 Incident {p.get('incident_id')} : {p.get('cause')} sur {p.get('component')} "
-            f"(niveau {p.get('level')}). L'agent Fiabilité s'en occupe.")
+            f"(niveau {p.get('level')}). L'agent Fiabilité s'en occupe.", p.get("incident_id"))
 
     def on_incident_resolved(self, event: Event) -> None:
         p = event.payload
@@ -223,20 +236,20 @@ class Orchestrator:
         actions = ", ".join(a["action"] for a in p.get("actions", [])) or "aucune"
         self.notifier.notify(
             f"✅ Incident {p.get('incident_id')} résolu en {p.get('duration_seconds', 0):.0f} s "
-            f"(actions : {actions}).")
+            f"(actions : {actions}).", p.get("incident_id"))
 
     def on_approval_requested(self, event: Event) -> None:
         p = event.payload
         self.notifier.notify(
             f"🙋 L'agent {event.source} demande une intervention humaine : {p.get('reason')} "
-            f"(incident {p.get('incident_id')}).")
+            f"(incident {p.get('incident_id')}).", p.get("incident_id"))
 
     # ------------------------------------------------ agent Coûts
     def on_budget_exceeded(self, event: Event) -> None:
         p = event.payload
         self.notifier.notify(
             f"💶 Budget dépassé de {p.get('over_by', 0):.4f} € si on réentraîne. "
-            f"Suggestion de l'agent Coûts : {p.get('suggested_action')}.")
+            f"Suggestion de l'agent Coûts : {p.get('suggested_action')}.", p.get("request_id"))
 
     def on_cost_recommendation(self, event: Event) -> None:
         p = event.payload

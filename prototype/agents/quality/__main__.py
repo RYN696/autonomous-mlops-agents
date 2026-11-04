@@ -10,6 +10,7 @@ Usage (depuis prototype/) :
 from __future__ import annotations
 
 import argparse
+import uuid
 
 import mlflow
 import pandas as pd
@@ -92,6 +93,7 @@ def check_once(args) -> None:
     event = run_check(model, reference, clean, raw)
     # Mois contrôlé : l'orchestrateur le donne à Retrain comme période d'entraînement
     event.payload["period"] = f"{args.year}-{args.month:02d}"
+    event.payload["check_id"] = uuid.uuid4().hex[:8]  # traçabilité : repris par l'orchestrateur
     event = add_explanation(event, use_llm=not args.no_llm)
 
     if args.dry_run:

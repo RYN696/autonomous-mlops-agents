@@ -1,118 +1,114 @@
-"""Page web de l'orchestrateur (http://localhost:8080).
+"""Interface de la pipeline (http://localhost:8080), servie par l'orchestrateur.
 
-À gauche : messages et questions pour l'humain, avec les boutons Valider / Refuser.
-À droite : les dernières lignes du journal d'actions de tous les agents.
-/graph : les graphes LangGraph de l'orchestrateur (Mermaid)."""
+/                 vue d'ensemble : agents, services, questions en attente, parcours récents
+/parcours         toutes les demandes de réentraînement et tous les incidents
+/parcours/<id>    chronologie d'un parcours, étape par étape et agent par agent
+/agents/<clé>     ce que fait un agent, ce qu'il écoute et publie, ses dernières actions
+/journal          journal d'actions complet, filtrable
+/graph            les graphes LangGraph de l'orchestrateur (Mermaid)
+POST /answer      réponse humaine à une question (publie approval_given)
+Les gabarits et le style sont dans prototype/ui/.
+"""
 from __future__ import annotations
 
-from flask import Flask, redirect, render_template_string, request
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+from flask import Flask, abort, redirect, render_template, request
 
 from common.events import Event, EventType
+from ui import traces as tr
+from ui.catalog import AGENTS, BY_KEY
+from ui.status import PipelineStatus
 
-PAGE = """<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="10">
-<title>Orchestrateur MLOps</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 24px; background: #f6f7f9; color: #1f2328; }
-  h1 { font-size: 22px; margin: 0 0 16px; }
-  h2 { font-size: 16px; margin: 0 0 8px; }
-  .cols { display: grid; grid-template-columns: 3fr 2fr; gap: 24px; }
-  .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; }
-  .question { border-left: 4px solid #bf8700; }
-  .approved { border-left: 4px solid #1a7f37; }
-  .refused { border-left: 4px solid #cf222e; }
-  .time { color: #656d76; font-size: 12px; }
-  button { padding: 6px 14px; border-radius: 6px; border: 1px solid #d0d7de; cursor: pointer; margin-right: 6px; }
-  .yes { background: #1a7f37; color: #fff; }
-  .no { background: #cf222e; color: #fff; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
-  td, th { border-bottom: 1px solid #d0d7de; padding: 4px 6px; text-align: left; vertical-align: top; }
-  @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
-</style>
-</head>
-<body>
-<h1>Orchestrateur MLOps</h1>
-{% if has_graph %}<p><a href="/graph">Voir les graphes LangGraph</a></p>{% endif %}
-<p>Ton prénom (pour signer les validations) : <input id="who" placeholder="ismail"></p>
-<div class="cols">
-  <div>
-    <h2>Messages</h2>
-    {% for n in notifications %}
-      <div class="card {{ 'question' if n.status == 'pending' else (n.status or '') }}">
-        <div class="time">{{ n.timestamp.strftime('%d/%m %H:%M:%S') }}</div>
-        <div>{{ n.text }}</div>
-        {% if n.status == 'pending' %}
-          <form method="post" action="/answer" onsubmit="this.who.value = document.getElementById('who').value">
-            <input type="hidden" name="request_id" value="{{ n.request_id }}">
-            <input type="hidden" name="who">
-            <button class="yes" name="choice" value="yes">Valider</button>
-            <button class="no" name="choice" value="no">Refuser</button>
-          </form>
-        {% elif n.status %}
-          <div class="time">{{ 'Validé' if n.status == 'approved' else 'Refusé' }} par {{ n.answered_by }}</div>
-        {% endif %}
-      </div>
-    {% else %}
-      <p>Aucun message pour l'instant.</p>
-    {% endfor %}
-  </div>
-  <div>
-    <h2>Journal d'actions</h2>
-    <table>
-      <tr><th>Heure</th><th>Agent</th><th>Action</th></tr>
-      {% for a in actions %}
-        <tr><td>{{ a.timestamp.strftime('%H:%M:%S') }}</td><td>{{ a.agent }}</td><td>{{ a.action }}</td></tr>
-      {% endfor %}
-    </table>
-  </div>
-</div>
-<script>
-  const who = document.getElementById("who");
-  try { who.value = localStorage.getItem("who") || ""; } catch (e) {}
-  who.addEventListener("input", () => { try { localStorage.setItem("who", who.value); } catch (e) {} });
-</script>
-</body>
-</html>"""
+UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 
 
-GRAPH_PAGE = """<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<title>Graphes de l'orchestrateur</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 24px; background: #f6f7f9; color: #1f2328; }
-  .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; overflow-x: auto; }
-</style>
-</head>
-<body>
-<p><a href="/">← Messages</a></p>
-<h1>Graphes LangGraph de l'orchestrateur</h1>
-{% for title, code in graphs.items() %}
-  <div class="card"><h2>{{ title }}</h2><pre class="mermaid">{{ code }}</pre></div>
-{% endfor %}
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
-<script>mermaid.initialize({ startOnLoad: true });</script>
-</body>
-</html>"""
+def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | None = None) -> Flask:
+    app = Flask("orchestrator-web", template_folder=str(UI_DIR / "templates"),
+                static_folder=str(UI_DIR / "static"))
+    status = status or PipelineStatus(log.engine)
 
+    @app.context_processor
+    def common_values():
+        return {"agents": AGENTS, "has_graph": orchestrator is not None,
+                "pending_count": len(notifier.pending()), "path": request.path}
 
-def create_app(notifier, bus, log, orchestrator=None) -> Flask:
-    app = Flask("orchestrator-web")
+    @app.template_filter("iso")
+    def iso(ts: datetime | None) -> str:
+        return tr.utc(ts).isoformat() if ts else ""
+
+    @app.template_filter("pretty")
+    def pretty(value) -> str:
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+
+    @app.template_filter("duration")
+    def duration(seconds: float) -> str:
+        seconds = int(round(seconds or 0))
+        if seconds < 60:
+            return f"{seconds} s"
+        if seconds < 3600:
+            return f"{seconds // 60} min {seconds % 60:02d} s"
+        return f"{seconds // 3600} h {seconds % 3600 // 60:02d} min"
+
+    def in_progress() -> list[dict]:
+        """Fils LangGraph en pause, avec l'étape attendue."""
+        if orchestrator is None:
+            return []
+        waiting = {"cost_estimated": "attend le coût", "approval_given": "attend un humain"}
+        return [{"id": rid, "step": waiting.get(getattr(orchestrator.waiting_for(rid), "value", ""), "?")}
+                for rid in sorted(orchestrator.pending)]
 
     @app.get("/")
     def index():
-        return render_template_string(PAGE, notifications=notifier.latest(), actions=log.latest(20),
-                                      has_graph=orchestrator is not None)
+        containers = status.containers()
+        activity = tr.agent_activity(log.engine)
+        cards = [{"info": a, "container": containers.get(a.service), **activity.get(a.log_name, {})}
+                 for a in AGENTS]
+        recent = tr.recent_traces(log.engine, limit=8)
+        incidents = [t for t in tr.recent_traces(log.engine, limit=50, kind=tr.INCIDENT) if t.level in ("run", "wait")]
+        return render_template("overview.html", cards={c["info"].key: c for c in cards}, services=status.services(),
+                               production=status.production(), costs=status.month_cost(),
+                               questions=notifier.pending(), messages=notifier.latest(12), recent=recent,
+                               open_incidents=incidents, in_progress=in_progress(),
+                               docker_ok=bool(containers))
+
+    @app.get("/parcours")
+    def traces():
+        kind = request.args.get("type") or None
+        return render_template("traces.html", traces=tr.recent_traces(log.engine, limit=200, kind=kind), kind=kind)
+
+    @app.get("/parcours/<trace_id>")
+    def trace(trace_id: str):
+        t = tr.load_trace(log.engine, trace_id, notifier)
+        if t is None:
+            abort(404)
+        return render_template("trace.html", t=t)
+
+    @app.get("/agents/<key>")
+    def agent(key: str):
+        info = BY_KEY.get(key) or abort(404)
+        action = request.args.get("action") or None
+        rows = tr.journal(log.engine, agent=info.log_name, action=action, limit=80)
+        activity = tr.agent_activity(log.engine).get(info.log_name, {})
+        return render_template("agent.html", info=info, rows=rows, action=action, activity=activity,
+                               container=status.containers().get(info.service),
+                               actions=tr.actions_of(log.engine, info.log_name))
+
+    @app.get("/journal")
+    def journal():
+        args = {k: request.args.get(k) or None for k in ("agent", "action", "q")}
+        before = request.args.get("before", type=int)
+        rows = tr.journal(log.engine, before_id=before, limit=100, **args)
+        return render_template("journal.html", rows=rows, args=args,
+                               next_before=rows[-1]["id"] if len(rows) == 100 else None)
 
     @app.get("/graph")
     def graph():
         if orchestrator is None:
             return "Orchestrateur non branché sur cette page.", 404
-        return render_template_string(GRAPH_PAGE, graphs=orchestrator.mermaid())
+        return render_template("graph.html", graphs=orchestrator.mermaid(), in_progress=in_progress())
 
     @app.post("/answer")
     def answer():
@@ -122,6 +118,10 @@ def create_app(notifier, bus, log, orchestrator=None) -> Flask:
         if notifier.answer(request_id, approved, who):  # False si quelqu'un a déjà répondu
             bus.publish(Event(type=EventType.APPROVAL_GIVEN, source="page_web", payload={
                 "request_id": request_id, "approved": approved, "approved_by": who}))
-        return redirect("/")
+        return redirect(request.form.get("next") or "/")
+
+    @app.template_global()
+    def now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
 
     return app

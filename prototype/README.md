@@ -53,7 +53,7 @@ Arrêter : `docker compose down` (ajouter `-v` pour tout effacer, y compris les 
 | Grafana | http://localhost:3000 | Tableau de bord (source Postgres déjà configurée) |
 | Postgres | localhost:5432 (mlops / mlops) | Journal d'actions et métriques |
 | Redis | localhost:6379 | Bus d'événements entre agents |
-| Orchestrateur | http://localhost:8080 | Messages et validations humaines ; graphes LangGraph sur `/graph` (port hôte : `ORCHESTRATOR_HOST_PORT` si 8080 est pris) |
+| Interface | http://localhost:8080 | Vue d'ensemble, parcours, agents, journal, validations humaines, graphes LangGraph (port hôte : `ORCHESTRATOR_HOST_PORT` si 8080 est pris) |
 
 `docker compose up -d --build` lance aussi les 5 agents, qui ne se parlent que par Redis :
 
@@ -64,6 +64,19 @@ Arrêter : `docker compose down` (ajouter `-v` pour tout effacer, y compris les 
 | Coûts | `cost` | Estime le coût, signale le dépassement de budget, enregistre le coût de chaque entraînement |
 | Retrain | `retrain` | Entraîne sur le mois de la dérive, promeut ou bloque le challenger |
 | Fiabilité | `reliability` | Surveille l'API, MLflow, Redis ; redémarre / recrée les conteneurs (socket Docker monté) |
+
+### Interface et traçabilité
+
+L'interface (servie par l'orchestrateur, code dans `ui/`) se met à jour toute seule toutes les 5 s :
+
+- **Vue d'ensemble** : modèle en production, coût du mois, incidents ouverts, questions à valider,
+  carte des agents (état du conteneur, dernière action) et services.
+- **Parcours** : chaque dérive ou incident suivi de bout en bout. Les agents se passent un identifiant
+  (`check_id` du contrôle Qualité, puis `request_id` de l'orchestrateur repris par Coûts et Retrain,
+  ou `incident_id` de Fiabilité), ce qui permet d'afficher la chronologie complète, agent par agent,
+  avec le détail JSON de chaque étape et les messages envoyés à l'humain.
+- **Agents** : rôle, événements écoutés et publiés, dernières actions filtrables.
+- **Journal d'actions** : tout le journal, filtrable par agent, action ou texte.
 
 Qualité et Fiabilité utilisent Ollama, lancé **sur le PC** (`ollama serve`, modèles
 `qwen2.5:3b`, `llama3.2:3b`, `llama3.1:8b`) : les conteneurs le joignent par

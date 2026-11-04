@@ -230,6 +230,17 @@ def test_page_graph_affiche_les_deux_graphes(tmp_path, notifier, orch):
     assert "wait_human" in html and "drift_detected" in html
 
 
+def test_questions_orphelines_expirees_au_demarrage(tmp_path, notifier):
+    log = ActionLog(url=f"sqlite:///{tmp_path / 'log.db'}")
+    notifier.ask("On réentraîne ?", "avant-redemarrage")
+    orch = Orchestrator(bus=FakeBus(), log=log, notifier=notifier, rules=Rules(RULES))
+    orch.expire_orphans()
+
+    assert notifier.pending() == []
+    assert [r["action"] for r in log.latest()] == ["request_expired"]
+    assert "expirée" in notifier.latest()[0]["text"]
+
+
 # ---------- coordination avec Fiabilité et Coûts ----------
 def incident(type_, incident_id="inc-1"):
     return ev(type_, "agent_fiabilite", Severity.CRITICAL, incident_id=incident_id,

@@ -138,7 +138,12 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
+      MLFLOW_TRACKING_URI: http://mlflow:5000   # interface : modèle en production
+      API_URL: http://api:9696                  # interface : santé de l'API
+      COMPOSE_PROJECT_NAME: prototype           # interface : état des conteneurs du projet
       PYTHONUNBUFFERED: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # interface : état des conteneurs (lecture seule en pratique)
     depends_on:
       - redis
       - postgres
