@@ -150,10 +150,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - api
-      - mlflow
-      - redis
-      - postgres
+      api:
+        condition: service_started
+      mlflow:
+        condition: service_started
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      init:
+        condition: service_completed_successfully  # pas d'incident "API sans modèle" au premier lancement
     restart: unless-stopped
 
   orchestrator:
