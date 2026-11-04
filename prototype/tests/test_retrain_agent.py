@@ -2,7 +2,9 @@ import numpy as np
 import pytest
 from mlflow import MlflowClient
 
+from agents.retrain import explain
 from agents.retrain.agent import RetrainAgent, default_months, parse_period
+from agents.retrain.tuning import TUNED, tune
 from common import config
 from common.action_log import ActionLog
 from common.events import Event, EventType
@@ -34,11 +36,16 @@ def request(period=None, **extra):
 
 
 @pytest.fixture
-def make_agent(local_mlflow, tmp_path):
-    def make(corrupted=(), cooldown=0):
-        return RetrainAgent(bus=FakeBus(), log=ActionLog(url=f"sqlite:///{tmp_path / 'log.db'}"),
-                            read_data=reader(corrupted), reload=lambda: True,
-                            list_months=lambda: [(2023, 1), (2023, 2), (2023, 3)], cooldown_minutes=cooldown)
+def make_agent(local_mlflow, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "LLM_API_KEY", "")  # les tests n'appellent jamais Grok
+    def make(corrupted=(), cooldown=0, tuning=0):
+        shown = []
+        agent = RetrainAgent(bus=FakeBus(), log=ActionLog(url=f"sqlite:///{tmp_path / 'log.db'}"),
+                             read_data=reader(corrupted), reload=lambda: True,
+                             list_months=lambda: [(2023, 1), (2023, 2), (2023, 3)], cooldown_minutes=cooldown,
+                             tuning_trials=tuning, show=lambda text: shown.append(text) or True)
+        agent.shown = shown  # messages affichés
+        return agent
     return make
 
 
@@ -102,3 +109,83 @@ def test_duplicates_and_cooldown_are_skipped(make_agent):
 
     validated = agent.handle(request("2023-02", approved_by="responsable"))  # validé par un humain
     assert validated["decision"] != "skipped"
+
+
+# --- v4 : Optuna et explication par le LLM ---
+
+PROMOTED = {"challenger_version": "3", "challenger_rmse": 5.1, "production_version": "2",
+            "production_rmse": 5.43, "improvement": 0.061, "min_improvement": 0.02, "period": ["2023-03"]}
+
+
+def test_tune_returns_tuned_params():
+    params, seconds = tune(synthetic_month(2023, 1), n_trials=3)
+    assert set(params) == set(TUNED)
+    assert seconds > 0
+
+
+def test_tuned_challenger_and_message_shown(make_agent):
+    agent = make_agent(tuning=2)
+    result = agent.handle(request("2023-01"))
+    registered = next(e for e in agent.bus.events if e.type == EventType.MODEL_REGISTERED)
+    assert set(registered.payload["params"]) == set(TUNED)
+
+    run = MlflowClient(config.MLFLOW_TRACKING_URI).get_run(
+        MlflowClient(config.MLFLOW_TRACKING_URI).get_model_version(config.MODEL_NAME, "1").run_id)
+    assert run.data.params["max_depth"] == str(registered.payload["params"]["max_depth"])
+
+    assert agent.shown == [result["message"]]
+    assert result["message_source"] == "template"
+    promoted = next(e for e in agent.bus.events if e.type == EventType.MODEL_PROMOTED)
+    assert promoted.payload["message"] == result["message"]
+
+
+def test_message_without_llm(monkeypatch):
+    monkeypatch.setattr(config, "LLM_API_KEY", "")
+    text, source = explain.explain_decision("promoted", PROMOTED)
+    assert source == "template"
+    assert text.startswith("✅ v3 promue : 6.1 % d'erreur en moins")
+    blocked = {**PROMOTED, "challenger_rmse": 5.46, "production_rmse": 5.51, "improvement": 0.009}
+    assert explain.template_message("blocked", blocked).startswith("⛔ Challenger v3 refusé")
+
+
+class FakeResponse:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"choices": [{"message": {"content": self.text}}]}
+
+
+def fake_grok(monkeypatch, text):
+    calls = []
+    monkeypatch.setattr(config, "LLM_API_KEY", "cle-de-test")
+    monkeypatch.setattr(explain.requests, "post", lambda url, **kw: calls.append(kw) or FakeResponse(text))
+    return calls
+
+
+def test_message_written_by_grok(monkeypatch):
+    calls = fake_grok(monkeypatch, "✅ v3 promue : 6,1 % d'erreur en moins que v2 (RMSE 5,10 contre 5,43 min).")
+    text, source = explain.explain_decision("promoted", PROMOTED)
+    assert source == "llm" and text.startswith("✅ v3 promue")
+    assert calls[0]["headers"]["Authorization"] == "Bearer cle-de-test"
+    assert "Gain : 6.1 %" in calls[0]["json"]["messages"][1]["content"]
+
+
+def test_invented_number_falls_back_to_template(monkeypatch):
+    fake_grok(monkeypatch, "✅ v3 promue : 12 % d'erreur en moins.")  # 12 n'est pas dans les faits
+    text, source = explain.explain_decision("promoted", PROMOTED)
+    assert source == "template"
+    assert text == explain.template_message("promoted", PROMOTED)
+
+
+def test_grok_down_falls_back_to_template(monkeypatch):
+    monkeypatch.setattr(config, "LLM_API_KEY", "cle-de-test")
+
+    def down(url, **kw):
+        raise explain.requests.ConnectionError("pas de réseau")
+
+    monkeypatch.setattr(explain.requests, "post", down)
+    assert explain.explain_decision("promoted", PROMOTED)[1] == "template"
