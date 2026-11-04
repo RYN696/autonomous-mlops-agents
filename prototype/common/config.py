@@ -22,9 +22,14 @@ DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "0.5"))
 MIN_IMPROVEMENT = float(os.getenv("MIN_IMPROVEMENT", "0.02"))  # 2 % d'erreur en moins
 RETRAIN_COOLDOWN_MINUTES = float(os.getenv("RETRAIN_COOLDOWN_MINUTES", "60"))  # pause entre deux entraînements
 DEFAULT_TRAIN_MONTHS = int(os.getenv("DEFAULT_TRAIN_MONTHS", "1"))  # mois d'entraînement si aucune période
+RETRAIN_TUNING_TRIALS = int(os.getenv("RETRAIN_TUNING_TRIALS", "20"))  # essais Optuna (0 = pas d'optimisation)
 MAX_ERROR_RATE = float(os.getenv("MAX_ERROR_RATE", "0.05"))
 MAX_LATENCY_SECONDS = float(os.getenv("MAX_LATENCY_SECONDS", "1.0"))
-
+# LLM (explication des décisions de Retrain) : API Grok de xAI
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")  # vide = message écrit par le code, sans LLM
+LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
+LLM_API_URL = os.getenv("LLM_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 # Coûts (tarif fictif pour le prototype)
 CPU_HOUR_PRICE = float(os.getenv("CPU_HOUR_PRICE", "0.05"))
 MONTHLY_BUDGET = float(os.getenv("MONTHLY_BUDGET", "20.0"))

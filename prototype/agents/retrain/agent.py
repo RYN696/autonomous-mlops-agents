@@ -18,12 +18,16 @@ from typing import Any, Callable
 
 import mlflow
 import pandas as pd
+from redis import event
 import requests
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
 from sklearn.metrics import root_mean_squared_error
 
 from common import config
+from agents.retrain.explain import explain_decision
+from agents.retrain.notify import show_message
+from agents.retrain.tuning import tune
 from common.action_log import ActionLog
 from common.events import Event, EventBus, EventType, Severity
 from pipeline import train as training
@@ -81,6 +85,9 @@ class RetrainAgent:
         reload: Callable[[], bool] = reload_api,
         list_months: Callable[[], list[tuple[int, int]]] = available_months,
         cooldown_minutes: float | None = None,
+                tuning_trials: int | None = None,
+        explain: Callable[[str, dict], tuple[str, str]] = explain_decision,
+        show: Callable[[str], bool] = show_message,
     ):
         self.bus = bus or EventBus()
         self.log = log or ActionLog()
@@ -88,6 +95,9 @@ class RetrainAgent:
         self.reload = reload
         self.list_months = list_months
         self.cooldown_minutes = config.RETRAIN_COOLDOWN_MINUTES if cooldown_minutes is None else cooldown_minutes
+        self.tuning_trials = config.RETRAIN_TUNING_TRIALS if tuning_trials is None else tuning_trials
+        self.explain = explain
+        self.show = show
 
     def run(self) -> None:
         print("Agent Retrain : en écoute de retrain_requested…")
@@ -116,8 +126,14 @@ class RetrainAgent:
 
             df_train = pd.concat([self.read_data(y, m) for y, m in months], ignore_index=True)
             df_test = self.read_data(*training.next_month(*months[-1]))
+            # Optuna ne voit que df_train : le mois de test reste réservé à la comparaison
+            params, tuning_seconds = tune(df_train, self.tuning_trials) if self.tuning_trials > 0 else ({}, 0.0)
             challenger = training.fit_and_register(
-                df_train, df_test, tags={"role": "challenger", "train_period": f"{period[0]}..{period[-1]}"}
+                df_train,
+                df_test,
+                tags={"role": "challenger", "train_period": f"{period[0]}..{period[-1]}",
+                      "tuning_trials": str(self.tuning_trials)},
+                params=params,
             )
         except Exception as exc:  # l'agent doit continuer à écouter même si un entraînement échoue
             self.log.record(AGENT, "retrain_failed", event.model, {**who, "error": str(exc)})
@@ -128,13 +144,15 @@ class RetrainAgent:
             "version": challenger["version"],
             "rmse": challenger["rmse"],
             "training_seconds": challenger["training_seconds"],
+            "tuning_seconds": tuning_seconds,
+            "params": params,
             "period": period,
             **who,
         }
         self.log.record(AGENT, "challenger_registered", event.model, registered)
         self.publish(EventType.MODEL_REGISTERED, Severity.INFO, registered)
 
-        return self.compare_and_decide(challenger, df_test, who)
+        return self.compare_and_decide(challenger, df_test, {**who, "period": period, "params": params})
 
     def compare_and_decide(self, challenger: dict, df_test: pd.DataFrame, who: dict) -> dict[str, Any]:
         client = MlflowClient(config.MLFLOW_TRACKING_URI)
@@ -163,16 +181,21 @@ class RetrainAgent:
             client.set_registered_model_alias(config.MODEL_NAME, config.PRODUCTION_ALIAS, challenger["version"])
             client.set_model_version_tag(config.MODEL_NAME, challenger["version"], "decision", "promoted")
             result["api_reloaded"] = self.reload()
+            self.tell_humans("promoted", result)
             self.log.record(AGENT, "model_promoted", config.MODEL_NAME, result)
             self.publish(EventType.MODEL_PROMOTED, Severity.INFO, result)
             return {"decision": "promoted", **result}
 
         client.set_model_version_tag(config.MODEL_NAME, challenger["version"], "decision", "blocked")
         result["reason"] = f"le challenger ne réduit pas l'erreur d'au moins {config.MIN_IMPROVEMENT:.0%}"
+        self.tell_humans("blocked", result)
         self.log.record(AGENT, "promotion_blocked", config.MODEL_NAME, result)
         self.publish(EventType.PROMOTION_BLOCKED, Severity.WARNING, result)
         return {"decision": "blocked", **result}
-
+    def tell_humans(self, decision: str, result: dict) -> None:
+        """Ajoute au résultat un message lisible (LLM ou code), puis l'affiche."""
+        result["message"], result["message_source"] = self.explain(decision, result)
+        self.show(result["message"])
     def skip_reason(self, train_period: str, payload: dict) -> str | None:
         """Raison d'ignorer la demande (doublon ou pause), ou None pour entraîner."""
         if payload.get("force"):

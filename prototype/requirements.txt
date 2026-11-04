@@ -10,6 +10,7 @@ SQLAlchemy==2.1.4
 psycopg[binary]==3.3.6
 PyYAML==6.0.3
 requests==2.34.2
+optuna==5.0.0
 pytest==9.1.1
 fakeredis==2.39.0
 

@@ -55,6 +55,8 @@ services:
     build: .
     command: python -m agents.retrain
     environment:
+      LLM_API_KEY: ${LLM_API_KEY:-}         # lue dans .env ; vide = message sans LLM
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-oss-20b}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
