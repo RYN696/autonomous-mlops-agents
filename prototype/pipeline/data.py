@@ -1,7 +1,9 @@
 """Chargement des données NYC green taxi, avec un cache local dans prototype/data/."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from typing import Callable
 
 import pandas as pd
 
@@ -13,13 +15,32 @@ NUMERICAL = ["trip_distance"]
 TARGET = "duration"
 
 
+def download(url: str, path: Path, attempts: int = 5, reader: Callable[[str], pd.DataFrame] = pd.read_parquet,
+             sleep: Callable[[float], None] = time.sleep) -> None:
+    """Téléchargement avec nouvelles tentatives : le DNS de Docker Desktop échoue parfois
+    quelques secondes (vu au premier lancement d'un clone). Fichier écrit en une fois."""
+    for attempt in range(1, attempts + 1):
+        try:
+            df = reader(url)
+            break
+        except OSError as exc:  # URLError, erreurs réseau
+            if attempt == attempts:
+                raise
+            wait = 3 * 2 ** (attempt - 1)
+            print(f"Téléchargement impossible ({exc}) : nouvel essai dans {wait} s ({attempt}/{attempts})")
+            sleep(wait)
+    tmp = path.with_suffix(".part")
+    df.to_parquet(tmp)
+    tmp.replace(path)  # pas de fichier à moitié écrit si le conteneur s'arrête
+
+
 def read_dataframe(year: int, month: int) -> pd.DataFrame:
     """Lit un mois de données (téléchargé une seule fois, puis lu depuis le disque)."""
     DATA_DIR.mkdir(exist_ok=True)
     path = DATA_DIR / f"green_tripdata_{year}-{month:02d}.parquet"
     if not path.exists():
         print(f"Téléchargement de {path.name}…")
-        pd.read_parquet(URL.format(year=year, month=month)).to_parquet(path)
+        download(URL.format(year=year, month=month), path)
     df = pd.read_parquet(path)
 
     df[TARGET] = (df.lpep_dropoff_datetime - df.lpep_pickup_datetime).dt.total_seconds() / 60
