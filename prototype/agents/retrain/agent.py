@@ -1,12 +1,14 @@
 """Agent Retrain : entraîne un challenger, le compare à la production, puis le promeut ou le bloque.
 
-Écoute : retrain_requested  (payload : period, requested_by, approved_by, force)
+Écoute : retrain_requested  (payload : period ou months, requested_by, approved_by, force, data_file)
 Publie : model_registered, puis model_promoted ou promotion_blocked
          (incident_opened si l'entraînement échoue)
 Les versions ne sont jamais supprimées : l'ancienne production garde l'alias
 "previous" pour permettre un rollback.
 
-Sans "period", l'agent prend les derniers mois présents dans data/.
+Sans "period", l'agent prend les "months" derniers mois présents dans data/ (1 par défaut).
+"data_file" (fichier reçu dans data/, ex. incoming/...) remplace les mois de la période pour
+l'entraînement ; le mois de test reste le mois réel suivant.
 Une demande est ignorée si la même période a déjà été entraînée, ou si le
 dernier entraînement date de moins de RETRAIN_COOLDOWN_MINUTES (sauf demande
 validée par un humain). "force": true passe outre ces deux règles.
@@ -15,6 +17,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Callable
+
+from pathlib import Path
 
 import mlflow
 import pandas as pd
@@ -31,7 +35,7 @@ from agents.retrain.tuning import tune
 from common.action_log import ActionLog
 from common.events import Event, EventBus, EventType, Severity
 from pipeline import train as training
-from pipeline.data import DATA_DIR, TARGET, read_dataframe, to_features
+from pipeline.data import DATA_DIR, TARGET, read_dataframe, read_file, to_features
 
 AGENT = "agent_retrain"
 
@@ -82,6 +86,7 @@ class RetrainAgent:
         bus: EventBus | None = None,
         log: ActionLog | None = None,
         read_data: Callable[[int, int], pd.DataFrame] = read_dataframe,
+        read_received: Callable[[str], pd.DataFrame] = read_file,
         reload: Callable[[], bool] = reload_api,
         list_months: Callable[[], list[tuple[int, int]]] = available_months,
         cooldown_minutes: float | None = None,
@@ -92,6 +97,7 @@ class RetrainAgent:
         self.bus = bus or EventBus()
         self.log = log or ActionLog()
         self.read_data = read_data
+        self.read_received = read_received
         self.reload = reload
         self.list_months = list_months
         self.cooldown_minutes = config.RETRAIN_COOLDOWN_MINUTES if cooldown_minutes is None else cooldown_minutes
@@ -114,26 +120,35 @@ class RetrainAgent:
             if event.payload.get("period"):
                 months = parse_period(event.payload["period"])
             else:
-                months = default_months(self.list_months(), config.DEFAULT_TRAIN_MONTHS)
+                n = int(event.payload.get("months") or config.DEFAULT_TRAIN_MONTHS)
+                months = default_months(self.list_months(), n)
             period = [f"{y}-{m:02d}" for y, m in months]
+            received = event.payload.get("data_file")
+            train_period = f"{period[0]}..{period[-1]}" + (f" ({Path(received).name})" if received else "")
 
-            reason = self.skip_reason(f"{period[0]}..{period[-1]}", event.payload)
+            reason = self.skip_reason(train_period, event.payload)
             if reason:
                 skipped = {"action": "retrain_skipped", "reason": reason, "period": period, **who}
                 self.log.record(AGENT, "retrain_skipped", event.model, skipped)
                 self.publish(EventType.ACTION_LOGGED, Severity.INFO, skipped)
                 return {"decision": "skipped", "reason": reason}
 
-            self.log.record(AGENT, "retrain_started", event.model, {**who, "period": period})
+            started = {**who, "period": period}
+            if received:
+                started["data_file"] = received
+            self.log.record(AGENT, "retrain_started", event.model, started)
 
-            df_train = pd.concat([self.read_data(y, m) for y, m in months], ignore_index=True)
+            if received:  # fichier de nouvelles données (contrôlé par Qualité) à la place du mois téléchargé
+                df_train = self.read_received(received)
+            else:
+                df_train = pd.concat([self.read_data(y, m) for y, m in months], ignore_index=True)
             df_test = self.read_data(*training.next_month(*months[-1]))
             # Optuna ne voit que df_train : le mois de test reste réservé à la comparaison
             params, tuning_seconds = tune(df_train, self.tuning_trials) if self.tuning_trials > 0 else ({}, 0.0)
             challenger = training.fit_and_register(
                 df_train,
                 df_test,
-                tags={"role": "challenger", "train_period": f"{period[0]}..{period[-1]}",
+                tags={"role": "challenger", "train_period": train_period,
                       "tuning_trials": str(self.tuning_trials)},
                 params=params,
             )

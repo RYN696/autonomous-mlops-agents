@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Chat #mlops-agents{% endblock %}
+{% block content %}
+<h1>#mlops-agents</h1>
+<p class="sub">Demandez une action aux agents en une phrase. Le LLM comprend la phrase, le code la vérifie,
+  puis elle suit les mêmes règles qu'une dérive : estimation de l'agent Coûts, règles d'autonomie, validation
+  humaine si le budget est dépassé. La signature vient de « Signer en tant que ».</p>
+
+{% with messages = get_flashed_messages() %}
+  {% for msg in messages %}<div class="panel notice">{{ msg }}</div>{% endfor %}
+{% endwith %}
+
+<form class="panel chat-form" method="post" action="/chat" data-sign>
+  <input name="text" class="grow" placeholder="@agents retrain le modèle taxi sur les 3 derniers mois"
+         aria-label="Message" required maxlength="500" {{ 'disabled' if not enabled }}>
+  <input type="hidden" name="who">
+  <button class="go" {{ 'disabled' if not enabled }}>Envoyer</button>
+</form>
+
+<div id="chat-live" data-live>
+{% for c in conversations %}{% set r = c.row %}
+  <div class="panel chat" id="c-{{ c.id }}">
+    <div class="chat-line human">
+      <span class="chip"><span class="dot a-human"></span>{{ r.details.by }}</span>
+      <span class="time muted"><span data-ts="{{ r.timestamp|iso }}"></span></span>
+      <div class="bubble">{{ r.details.text }}</div>
+    </div>
+    {% if c.understood %}{% set u = c.understood %}
+      <div class="chat-line">
+        <span class="chip"><span class="dot a-orchestrator"></span>Orchestrateur</span>
+        <div class="understood mono">
+          <div class="screen-bar"><span></span><span></span><b>action comprise · {{ 'LLM' if u.understood_by == 'llm' else 'règles' }}</b></div>
+          {% if u.problem %}<div class="l-bad">non lancée : {{ u.problem }}</div>
+          {% else %}
+          <div>action&nbsp;&nbsp;&nbsp;: réentraîner</div>
+          <div>modèle&nbsp;&nbsp;&nbsp;: {{ u.model }}</div>
+          <div>période&nbsp;&nbsp;: {{ u.period_label }}</div>
+          <div>demandé&nbsp;&nbsp;: {{ u.by }}</div>
+          {% endif %}
+        </div>
+      </div>
+    {% elif not c.messages %}<p class="muted">L'orchestrateur lit la demande…</p>{% endif %}
+    {% for n in c.messages %}
+      {% if n.kind == 'question' and n.status == 'pending' %}{{ m.question(n, next='/chat') }}
+      {% else %}
+        <div class="chat-line">
+          <span class="time muted"><span data-ts="{{ n.timestamp|iso }}"></span></span>
+          <div class="bubble agent">{{ 'Question : ' if n.kind == 'question' }}{{ n.text }}
+            {% if n.kind == 'question' %}<b>— {{ {'approved': 'approuvé', 'refused': 'refusé', 'expired': 'expirée'}.get(n.status, n.status) }}{{ ' par ' ~ n.answered_by if n.answered_by }}</b>{% endif %}</div>
+        </div>
+      {% endif %}
+    {% endfor %}
+    <a class="muted" href="/parcours/{{ c.id }}">→ parcours {{ c.id }}</a>
+  </div>
+{% else %}
+  <p class="empty">Aucun message pour l'instant. Essayez : « @agents retrain le modèle taxi sur les 3 derniers mois ».</p>
+{% endfor %}
+</div>
+{% endblock %}

@@ -52,6 +52,11 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("corrupted", "Données", "Données corrompues",
              "10 % des trajets du mois ont une arrivée avant le départ.",
              "Incident « données corrompues », aucun réentraînement.", "quality", with_month=True),
+    Scenario("suspect", "Données", "Données suspectes",
+             "Un fichier reçu avec des valeurs aberrantes (durées négatives, distances de 9999 km, "
+             "distances incohérentes), sous le seuil « corrompu ».",
+             "Forte dérive → retrain sur ce fichier → challenger moins bon → promotion bloquée → "
+             "alerte « données suspectes, vérification humaine requise ».", "quality", with_month=True),
     Scenario("normal", "Données", "Contrôle normal",
              "Contrôle du mois sans rien modifier.",
              "quality_ok : rien ne se passe, c'est le cas nominal.", "quality", with_month=True),
@@ -68,6 +73,11 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("bad-model", "Pannes", "Mauvais modèle en production",
              "Promeut un modèle qui plante à chaque prédiction.",
              "Règle déterministe : rollback vers la version précédente → incident clos.", "reliability"),
+    Scenario("flaky-model", "Pannes", "Modèle défaillant sous la charge",
+             "Promeut une version qui plante sur les trajets de plus de 8 km : saine au calme, en erreur avec du "
+             "trafic (lancer le trafic ensuite).",
+             "Incident → redémarrage sans effet → règle : rollback vers la dernière version saine → incident clos.",
+             "reliability"),
     Scenario("mlflow-down", "Pannes", "MLflow en panne",
              "Arrête MLflow puis redémarre l'API, qui ne peut plus charger son modèle.",
              "Mode dégradé, pas de redémarrage ni de rollback → humain prévenu ; « Remettre en état » pour clore.",
@@ -113,6 +123,7 @@ class ScenarioRunner:
         self.lock = threading.Lock()
         self.actions = actions or {
             "drift": self._quality, "corrupted": self._quality, "normal": self._quality,
+            "suspect": self._quality, "flaky-model": self._inject("flaky_model"),
             "crash": self._inject("crash"), "errors": self._inject("errors"),
             "latency": self._inject("latency"), "bad-model": self._inject("bad_model"),
             "mlflow-down": self._inject("mlflow_down"), "recover": self._inject("recover"),

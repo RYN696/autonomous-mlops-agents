@@ -16,6 +16,7 @@ Publie : cost_estimate, retrain_requested, approval_requested,
 """
 from __future__ import annotations
 
+import threading
 import time
 import traceback
 import uuid
@@ -25,6 +26,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+from agents.orchestrator.chat import ChatParser
 from agents.orchestrator.rules import Rules
 from agents.orchestrator.workflow import AGENT, WAITING_FOR, build_retrain_graph
 from common import config
@@ -47,7 +49,7 @@ class RouterState(TypedDict):
 
 class Orchestrator:
     def __init__(self, bus, log, notifier, rules: Rules | None = None,
-                 clock: Callable[[], float] = time.time, checkpointer=None):
+                 clock: Callable[[], float] = time.time, checkpointer=None, chat: ChatParser | None = None):
         self.bus = bus
         self.log = log
         self.notifier = notifier
@@ -59,6 +61,10 @@ class Orchestrator:
         self.pending: set[str] = set()  # request_id des fils en pause (attente du coût ou d'un humain)
         self.retrain_since: float | None = None  # heure de la dernière demande de retrain
         self.open_incidents: dict[str, float] = {}  # incidents Fiabilité en cours -> heure d'ouverture
+        self.requests: dict[str, dict] = {}  # retrains lancés -> origine (période, données suspectes...)
+        self.chat = chat or ChatParser()
+        # deux fils appellent l'orchestrateur : l'écoute Redis et la page web (commandes chat)
+        self.lock = threading.RLock()
 
     def build_router(self):
         handlers = {
@@ -109,7 +115,8 @@ class Orchestrator:
         if event.source == AGENT:
             return  # nos propres événements reviennent par Redis : on les ignore
         if event.type in LISTENED:
-            self.router.invoke({"event": event})
+            with self.lock:
+                self.router.invoke({"event": event})
 
     # ------------------------------------------------ fils du workflow de réentraînement
     def thread(self, request_id: str) -> dict:
@@ -144,6 +151,27 @@ class Orchestrator:
         request_id = uuid.uuid4().hex[:8]
         self.advance(request_id, {"request_id": request_id, "drift": event.payload})
 
+    def on_chat(self, text: str, who: str, request_id: str | None = None) -> str:
+        """Commande en langage naturel (canal #mlops-agents de l'interface). Le LLM la comprend
+        (hors verrou : il peut être lent), puis elle suit le même graphe qu'une dérive."""
+        request_id = request_id or uuid.uuid4().hex[:8]
+        self.record("chat_received", {"request_id": request_id, "text": text, "by": who})
+        cmd = self.chat.parse(text)
+        with self.lock:
+            self.record("chat_understood", {"request_id": request_id, "by": who, **cmd.as_dict()})
+            if not cmd.ok:
+                self.notifier.notify(f"🤔 Je n'ai pas lancé cette demande : {cmd.problem}.", request_id,
+                                     level="warning")
+                return request_id
+            how = "le LLM" if cmd.understood_by == "llm" else "les règles, LLM indisponible"
+            self.notifier.notify(
+                f"🤖 Compris (par {how}) : réentraîner le modèle {cmd.model} sur {cmd.period_label}, "
+                f"demandé par {who}. Je consulte d'abord l'agent Coûts.", request_id)
+            self.advance(request_id, {"request_id": request_id, "command": {
+                "text": text, "by": who, "months": cmd.months or config.DEFAULT_TRAIN_MONTHS,
+                "model": cmd.model, "period_label": cmd.period_label}})
+        return request_id
+
     def on_cost_estimated(self, event: Event) -> None:
         request_id = event.payload.get("request_id")
         if self.waiting_for(request_id) == EventType.COST_ESTIMATED:  # sinon : demandée par quelqu'un d'autre
@@ -155,16 +183,31 @@ class Orchestrator:
             self.advance(request_id, Command(resume=event.payload))
 
     def request_retrain(self, request_id: str, approved_by: str | None, period: str | None = None,
-                        cause: str | None = None) -> None:
+                        cause: str | None = None, command: dict | None = None,
+                        drift: dict | None = None) -> None:
         """period : mois où Qualité a vu la dérive ; sans lui, Retrain prend les derniers mois de data/.
-        cause : explication de la dérive par l'agent Qualité, reprise dans le message à l'humain."""
+        cause : explication de la dérive par l'agent Qualité, reprise dans le message à l'humain.
+        command : demande faite en chat (qui, combien de mois) ; drift : contrôle Qualité d'origine."""
         self.retrain_since = self.clock()
+        drift = drift or {}
         payload = {"request_id": request_id, "requested_by": AGENT, "approved_by": approved_by}
         if period:
             payload["period"] = period
+        if drift.get("data_file"):  # fichier de nouvelles données reçu par Qualité : Retrain entraîne dessus
+            payload["data_file"] = drift["data_file"]
+        if command:
+            # demande explicite d'un humain : Retrain ne l'écarte pas comme doublon
+            payload.update(requested_by=command["by"], months=command["months"], origin="chat", force=True)
+        self.requests[request_id] = {"period": period, "suspect": bool(drift.get("suspect")),
+                                     "impossible_share": drift.get("impossible_share"),
+                                     "check_id": drift.get("check_id"), "chat": bool(command)}
         self.publish(EventType.RETRAIN_REQUESTED, Severity.INFO, payload)
         self.record("retrain_requested", payload)
         by = f", validé par {approved_by}" if approved_by else ""
+        if command:
+            self.notifier.notify(f"🔄 Réentraînement lancé sur {command['period_label']} (demandé par "
+                                 f"{command['by']}{by}).", request_id, actions=("report",))
+            return
         on = f" sur {period}" if period else ""
         why = f"\n> {cause.strip()[:400]}" if cause else ""
         self.notifier.notify(f"🔄 Dérive détectée{on} : réentraînement lancé{by}.{why}", request_id,
@@ -203,6 +246,7 @@ class Orchestrator:
     def on_model_promoted(self, event: Event) -> None:
         self.retrain_since = None
         p = event.payload
+        self.requests.pop(p.get("request_id"), None)
         actions: tuple[str, ...] = ("report",)
         if p.get("production_rmse") is None:
             text = f"✅ Premier modèle v{p['challenger_version']} mis en production (RMSE {p['challenger_rmse']:.2f})."
@@ -221,6 +265,21 @@ class Orchestrator:
             f"{p['production_rmse']:.2f} pour la production v{p['production_version']} "
             f"(gain {p['improvement']:.1%}, minimum {p['min_improvement']:.0%}). La production ne change pas.",
             p.get("request_id"), level="warning", actions=("report",))
+        origin = self.requests.pop(p.get("request_id"), {})
+        if origin.get("suspect") and (p.get("improvement") or 0) < 0:
+            # Règle : un challenger PIRE que la production, entraîné sur des données où Qualité a vu des
+            # valeurs impossibles -> ce sont les données qu'il faut vérifier. Les agents ne corrigent pas seuls.
+            share = origin.get("impossible_share")
+            how = f" ({share:.1%} de valeurs impossibles : durées négatives, distances aberrantes)" if share else ""
+            details = {"request_id": p.get("request_id"), "check_id": origin.get("check_id"),
+                       "period": origin.get("period"), "challenger_version": p.get("challenger_version"),
+                       "production_version": p.get("production_version"), "impossible_share": share}
+            self.record("suspect_data_alert", details)
+            self.notifier.notify(
+                f"🚨 Challenger v{p['challenger_version']} refusé : il fait plus d'erreurs que la "
+                f"v{p['production_version']}, qui reste en production. Les données de "
+                f"{origin.get('period') or 'ce contrôle'} sont suspectes{how} : vérification humaine requise.",
+                p.get("request_id"), level="alert", actions=("data", "ignore"))
 
     def on_action_logged(self, event: Event) -> None:
         p = event.payload

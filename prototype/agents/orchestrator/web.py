@@ -8,38 +8,49 @@
 /graph            les graphes LangGraph de l'orchestrateur (Mermaid)
 /scenarios        banc de test : boutons pour provoquer dérives et pannes, sans terminal
 /couts            rapport de coûts du mois (chiffres du code, explication par le LLM)
+/storyboard       les 4 scénarios du storyboard, joués pour de vrai et suivis case par case
+/chat             canal #mlops-agents : commandes en langage naturel pour l'orchestrateur
+/donnees          aperçu d'un fichier de données reçu (bouton « Voir les données »)
 POST /answer      réponse humaine à une question (publie approval_given, comme le bouton Discord)
+POST /actions/... gestes humains depuis la page : revenir à une version, ignorer une alerte
+POST /budget      budget du mois réglé par un responsable (lu en direct par l'agent Coûts)
 Les gabarits et le style sont dans prototype/ui/.
 """
 from __future__ import annotations
 
 import json
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, abort, flash, redirect, render_template, request
 
 from agents.cost import report as cost_report
-from agents.orchestrator.human import HumanActions
+from agents.orchestrator.human import HumanActionError, HumanActions
+from common import budget as live_budget
 from common import config
+from ui import data_preview
 from ui import traces as tr
-from ui.catalog import AGENTS, BY_KEY
+from ui.catalog import AGENTS, BY_KEY, agent_of
 from ui.scenarios import SCENARIOS, ScenarioRunner
 from ui.status import PipelineStatus
+from ui.storyboard import STORIES, StoryBoard
+from ui.summaries import summarize
 
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 
 
 def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | None = None,
                runner: ScenarioRunner | None = None, human: HumanActions | None = None,
-               discord=None) -> Flask:
+               discord=None, board: StoryBoard | None = None) -> Flask:
     app = Flask("orchestrator-web", template_folder=str(UI_DIR / "templates"),
                 static_folder=str(UI_DIR / "static"))
     app.secret_key = "banc-de-test-local"  # messages flash seulement (aucune session utilisateur)
     status = status or PipelineStatus(log.engine)
     runner = runner or ScenarioRunner(log)
     human = human or HumanActions(notifier, bus, log)
+    board = board or StoryBoard(runner, log, notifier, orchestrator, status)
 
     def services() -> list[dict]:
         if discord is None:
@@ -190,6 +201,117 @@ def create_app(notifier, bus, log, orchestrator=None, status: PipelineStatus | N
             report_job["running"] = True
             threading.Thread(target=make_cost_report, daemon=True).start()
         return redirect("/couts")
+
+    # ------------------------------------------------ storyboard
+    def budget_info() -> dict:
+        live = live_budget.current()
+        costs = status.month_cost()
+        return {"live": live, "value": live if live is not None else (costs or {}).get("budget"),
+                "spent": (costs or {}).get("total")}
+
+    def journal_rows(rows: list[dict]) -> list[dict]:
+        for r in rows:
+            r["timestamp"], r["info"] = tr.utc(r["timestamp"]), agent_of(r["agent"])
+            r["summary"] = summarize(r["action"], r["details"])
+            key = tr.trace_key(r["details"])
+            r["trace_id"] = key[1] if key else None
+        return rows
+
+    @app.get("/storyboard")
+    def storyboard():
+        runs = [{"run": r, "progress": board.progress(r), "finished": board.finished(r)} for r in board.runs]
+        last = tr.journal(log.engine, agent="agent_retrain", action="retrain_started", limit=1)
+        pause = None  # Retrain ignore un retrain automatique pendant RETRAIN_COOLDOWN_MINUTES après le précédent
+        if last:
+            left = config.RETRAIN_COOLDOWN_MINUTES - (datetime.now(timezone.utc) - last[0]["timestamp"]).total_seconds() / 60
+            pause = int(left) + 1 if left > 0 else None
+        return render_template("storyboard.html", stories=STORIES, runs=runs, board=board, pause=pause,
+                               trained=tr.trained_months(log.engine), budget=budget_info())
+
+    @app.post("/storyboard/run")
+    def run_story():
+        params = {k: request.form.get(k) for k in ("month", "text", "who")}
+        try:
+            run = board.start(request.form["story"], params)
+        except (PermissionError, RuntimeError, KeyError) as exc:
+            flash(str(exc))
+            return redirect("/storyboard")
+        return redirect(f"/storyboard/{run.id}")
+
+    @app.get("/storyboard/<run_id>")
+    def story(run_id: str):
+        run = board.get(run_id) or abort(404)
+        trace_id = board.trace_id(run)
+        questions = [n for n in notifier.pending() if trace_id and n["request_id"] == trace_id]
+        return render_template("story.html", run=run, progress=board.progress(run), finished=board.finished(run),
+                               trace_id=trace_id, questions=questions, rows=journal_rows(board.related_rows(run)),
+                               budget=budget_info(), grafana=config.GRAFANA_PUBLIC_URL)
+
+    @app.post("/budget")
+    def set_budget():
+        who = request.form.get("who") or "équipe"
+        try:
+            if request.form.get("action") == "reset":
+                live_budget.clear()
+                log.record("humain", "budget_changed", config.MODEL_NAME, {
+                    "budget": None, "by": who, "reason": "retour au budget de configuration de l'agent Coûts"})
+            else:
+                value = live_budget.set_budget(float(request.form["budget"].replace(",", ".")))
+                log.record("humain", "budget_changed", config.MODEL_NAME, {"budget": value, "by": who})
+        except (ValueError, KeyError) as exc:
+            flash(f"budget invalide ({exc})")
+        except Exception as exc:  # Redis injoignable
+            flash(f"budget non enregistré : {type(exc).__name__}: {exc}")
+        return redirect(request.form.get("next") or "/storyboard")
+
+    # ------------------------------------------------ chat
+    @app.get("/chat")
+    def chat():
+        conversations = []
+        for row in tr.journal(log.engine, action="chat_received", limit=15):
+            rid = row["details"].get("request_id")
+            understood = tr.journal(log.engine, action="chat_understood", q=rid, limit=1)
+            conversations.append({"row": row, "id": rid, "understood": understood[0]["details"] if understood else None,
+                                  "messages": notifier.for_request(rid)})
+        return render_template("chat.html", conversations=conversations, enabled=orchestrator is not None)
+
+    @app.post("/chat")
+    def post_chat():
+        text = (request.form.get("text") or "").strip()
+        who = request.form.get("who") or "équipe"
+        if not text or orchestrator is None:
+            flash("message vide" if not text else "orchestrateur non branché sur cette page")
+            return redirect("/chat")
+        request_id = uuid.uuid4().hex[:8]
+        # le LLM peut mettre plusieurs secondes à comprendre : la page se met à jour toute seule
+        threading.Thread(target=orchestrator.on_chat, args=(text[:500], who, request_id), daemon=True).start()
+        return redirect("/chat")
+
+    # ------------------------------------------------ gestes humains (comme les boutons Discord)
+    @app.post("/actions/rollback")
+    def human_rollback():
+        f = request.form
+        try:
+            flash(human.rollback(f["target"], f["current"], f.get("request_id") or None,
+                                 f.get("who") or "équipe", "page_web"))
+        except HumanActionError as exc:
+            flash(f"Rien n'a été changé : {exc}")
+        return redirect(f.get("next") or "/")
+
+    @app.post("/actions/ignore")
+    def human_ignore():
+        f = request.form
+        flash(human.ignore(f.get("request_id") or None, f.get("who") or "équipe", "page_web"))
+        return redirect(f.get("next") or "/")
+
+    @app.get("/donnees")
+    def data_view():
+        name = request.args.get("fichier", "")
+        try:
+            preview, error = data_preview.preview(name), None
+        except (ValueError, OSError) as exc:
+            preview, error = None, str(exc)
+        return render_template("data.html", preview=preview, error=error, name=name)
 
     @app.post("/answer")
     def answer():

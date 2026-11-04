@@ -24,6 +24,7 @@ from typing import Callable, Optional
 import requests
 from prometheus_client.parser import text_string_to_metric_families
 
+from common import budget as live_budget
 from common import config
 from common.action_log import ActionLog
 from common.events import EventBus, EventType
@@ -32,6 +33,7 @@ from . import recommender
 from .agent import CostAgent
 from .collector import DockerStatsCollector
 from .listener import make_handler
+from .settings import CostConfig
 from .sql_store import SqlCostStore
 
 log = logging.getLogger("agent_couts")
@@ -163,7 +165,7 @@ class CostService:
         self._listener.start()
         log.info(
             "CostService démarré (budget mensuel : %s €, intervalle : %ss)",
-            self.agent.config.monthly_budget,
+            self.agent.budget(),
             self.interval_seconds,
         )
 
@@ -190,6 +192,7 @@ def build_agent(
         bus=bus or EventBus(),
         action_log=action_log or ActionLog(),
         collector=collector,
+        budget=lambda: live_budget.get(CostConfig().monthly_budget),  # réglé en direct dans l'interface
     )
 
 

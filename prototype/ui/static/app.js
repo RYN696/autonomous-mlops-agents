@@ -24,10 +24,11 @@
 
   // Prénom gardé d'une visite à l'autre pour signer les validations
   function wireWho(root) {
-    root.querySelectorAll("form.answer").forEach((form) => {
+    root.querySelectorAll("form.answer, form[data-sign]").forEach((form) => {
       form.addEventListener("submit", () => {
         const who = document.getElementById("who");
-        form.querySelector("input[name=who]").value = who ? who.value : "";
+        const field = form.querySelector("input[type=hidden][name=who]");
+        if (field && who && who.value) field.value = who.value;
       });
     });
   }

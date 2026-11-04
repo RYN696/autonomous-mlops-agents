@@ -189,3 +189,18 @@ def test_grok_down_falls_back_to_template(monkeypatch):
 
     monkeypatch.setattr(explain.requests, "post", down)
     assert explain.explain_decision("promoted", PROMOTED)[1] == "template"
+
+def test_months_and_received_file(make_agent):
+    """Scénario 3 : « les 3 derniers mois » ; scénario 4 : entraînement sur le fichier reçu par Qualité."""
+    agent = make_agent()
+    agent.list_months = lambda: [(2023, 1), (2023, 2), (2023, 3), (2023, 4)]
+    agent.handle(request(months=3, force=True))
+    registered = [e for e in agent.bus.events if e.type == EventType.MODEL_REGISTERED][-1]
+    assert registered.payload["period"] == ["2023-01", "2023-02", "2023-03"]
+
+    received = []
+    agent.read_received = lambda name: received.append(name) or synthetic_month(2023, 3)
+    agent.handle(request("2023-03", data_file="incoming/recu-k1.parquet"))
+    assert received == ["incoming/recu-k1.parquet"]
+    started = [r for r in agent.log.latest() if r["action"] == "retrain_started"][0]
+    assert started["details"]["data_file"] == "incoming/recu-k1.parquet"

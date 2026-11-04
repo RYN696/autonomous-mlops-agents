@@ -8,6 +8,7 @@ dans un autre terminal). Chaque panne indique une réaction raisonnable ; c'est 
     python -m scripts.inject_failure errors        # 30 % d'erreurs 500 (option --rate)
     python -m scripts.inject_failure latency       # +2 s par prédiction (option --seconds)
     python -m scripts.inject_failure bad-model     # promeut un modèle cassé
+    python -m scripts.inject_failure flaky-model   # promeut un modèle qui plante sur les longs trajets
     python -m scripts.inject_failure mlflow-down   # arrête MLflow puis redémarre l'API
     python -m scripts.inject_failure recover       # annule les pannes (le geste de l'humain)
 """
@@ -27,6 +28,8 @@ EXPECTED = {  # réaction raisonnable attendue ; c'est le LLM qui décide
     "errors": "incident -> enquête (journaux) -> redémarrage (efface la panne en mémoire) -> clôture",
     "latency": "incident (surcharge) -> mode dégradé -> humain prévenu ; puis `recover` -> clôture",
     "bad-model": "incident (mauvais modèle) -> rollback vers la version précédente -> clôture",
+    "flaky-model": "saine au calme ; avec du trafic : incident -> redémarrage sans effet -> rollback "
+                   "vers la dernière version saine -> clôture",
     "mlflow-down": "incident (MLflow) -> mode dégradé, sans redémarrage ni rollback (le juge les refuse) "
                    "-> humain prévenu ; puis `recover` -> clôture",
 }
@@ -94,6 +97,33 @@ def bad_model() -> None:
           f"'{previous_alias}'.")
 
 
+def flaky_model() -> str:
+    """Promeut une nouvelle version : le modèle de production avec un bug sur les longs trajets
+    (scripts/faulty_model.py). Sans trafic elle paraît saine ; l'ancienne garde l'alias "previous"."""
+    import mlflow
+    from mlflow import MlflowClient
+
+    from scripts.faulty_model import LongTripBug
+
+    mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(config.EXPERIMENT_NAME)
+    client = MlflowClient()
+    current = client.get_model_version_by_alias(config.MODEL_NAME, config.PRODUCTION_ALIAS).version
+    model = LongTripBug(mlflow.sklearn.load_model(f"models:/{config.MODEL_NAME}/{current}"))
+    with mlflow.start_run(run_name="demo-modele-longs-trajets"):
+        mlflow.set_tag("demo", "inject_failure")
+        info = mlflow.sklearn.log_model(model, name="model", registered_model_name=config.MODEL_NAME,
+                                        serialization_format="cloudpickle")
+    version = info.registered_model_version
+    previous_alias = getattr(config, "PREVIOUS_ALIAS", "previous")
+    client.set_registered_model_alias(config.MODEL_NAME, previous_alias, current)
+    client.set_registered_model_alias(config.MODEL_NAME, config.PRODUCTION_ALIAS, version)
+    requests.post(f"{config.API_URL}/reload", timeout=60)
+    print(f"Version {version} promue en production (plante au-delà de 8 km) ; la version {current} "
+          f"garde l'alias '{previous_alias}'.")
+    return str(version)
+
+
 def mlflow_down() -> None:
     client = _docker()
     client.containers.get(config.MLFLOW_CONTAINER_NAME).stop()
@@ -148,7 +178,7 @@ def main() -> None:
         stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Banc de pannes pour l'agent Fiabilité.")
     parser.add_argument("mode", choices=["traffic", "crash", "errors", "latency", "bad-model",
-                                         "mlflow-down", "recover"])
+                                         "flaky-model", "mlflow-down", "recover"])
     parser.add_argument("--rate", type=float, default=0.3, help="part d'erreurs pour le mode errors")
     parser.add_argument("--seconds", type=float, default=2.0, help="latence ajoutée pour le mode latency")
     parser.add_argument("--rps", type=float, default=5.0, help="requêtes par seconde pour le mode traffic")
@@ -160,6 +190,7 @@ def main() -> None:
         "errors": lambda: errors(args.rate),
         "latency": lambda: latency(args.seconds),
         "bad-model": bad_model,
+        "flaky-model": flaky_model,
         "mlflow-down": mlflow_down,
         "recover": recover,
     }

@@ -189,6 +189,7 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock  # interface : état des conteneurs, page Scénarios
+      - ./data:/app/data:ro                         # interface : « Voir les données » d'un fichier reçu
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

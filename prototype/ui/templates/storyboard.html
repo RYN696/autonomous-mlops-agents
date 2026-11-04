@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Storyboard{% endblock %}
+{% block content %}
+<h1>Storyboard</h1>
+<p class="sub">Les 4 scénarios imaginés en Design Thinking, joués pour de vrai : « Lancer » prépare la situation,
+  puis ce sont les agents qui réagissent seuls. Chaque case se coche avec ce qui s'est réellement passé.</p>
+
+{% with messages = get_flashed_messages() %}
+  {% for msg in messages %}<div class="panel notice">{{ msg }}</div>{% endfor %}
+{% endwith %}
+{% if not board.enabled %}
+  <div class="panel notice">Scénarios désactivés : mettre <code>DEMO_CONTROLS: "1"</code> dans le service
+    <code>orchestrator</code> de <code>docker-compose.yml</code>.</div>
+{% endif %}
+
+<div class="grid story-list">
+{% for s in stories %}
+  <form class="panel story-card" method="post" action="/storyboard/run">
+    <input type="hidden" name="story" value="{{ s.key }}">
+    <div class="story-head">
+      <span class="snum">Scénario {{ s.number }}</span>
+      <h2>{{ s.title }}</h2>
+    </div>
+    <div class="objs">{% for o in s.objectives %}<span class="obj">{{ o }}</span>{% endfor %}</div>
+    <p>{{ s.summary }}</p>
+    {% if s.key == 'derive' and pause %}
+      <p class="notice-inline">Retrain est en pause encore {{ pause }} min après le dernier entraînement
+        (<code>RETRAIN_COOLDOWN_MINUTES</code>) : lancé maintenant, ce scénario finira en « ignoré par Retrain ».</p>
+    {% endif %}
+    <ol class="case-list">
+      {% for c in s.cases %}<li><span class="mono muted">{{ c.clock }}</span> {{ c.title }}</li>{% endfor %}
+    </ol>
+    <div class="scen-actions">
+      {% if 'month' in s.params %}
+        <select name="month" aria-label="Mois des données">
+          {% for mo in range(2, 7) %}{% set key = '2023-%02d'|format(mo) %}
+            <option value="{{ mo }}" {{ 'selected' if mo == 3 }}>{{ key }}{{ ' · déjà entraîné' if key in trained and s.key == 'derive' }}</option>
+          {% endfor %}
+        </select>
+      {% endif %}
+      {% if 'text' in s.params %}
+        <input name="text" value="@agents retrain le modèle taxi sur les 3 derniers mois" aria-label="Message" class="grow">
+        <input name="who" value="data scientist" aria-label="Auteur" size="12">
+      {% endif %}
+      <button class="go" {{ 'disabled' if not board.enabled or board.busy(s.key) }}>
+        {{ 'En cours…' if board.busy(s.key) else 'Lancer' }}</button>
+    </div>
+  </form>
+{% endfor %}
+</div>
+
+<div class="grid two">
+  <div class="panel">
+    <h2>Déroulés</h2>
+    <div id="story-runs" data-live>
+    {% if runs %}
+      <table>
+        <thead><tr><th class="nowrap">Début</th><th>Scénario</th><th>Avancement</th><th></th></tr></thead>
+        <tbody>
+        {% for item in runs %}{% set r = item.run %}
+          <tr>
+            <td class="nowrap"><span data-ts="{{ r.started|iso }}"></span></td>
+            <td><a href="/storyboard/{{ r.id }}">Scénario {{ r.story.number }} · {{ r.story.title }}</a>
+              {% if r.params.month %}<span class="muted">2023-{{ '%02d'|format(r.params.month|int) }}</span>{% endif %}</td>
+            <td><div class="steps">{% for p in item.progress %}<span class="step s-{{ p.state }}" title="{{ p.case.title }}"></span>{% endfor %}</div></td>
+            <td class="nowrap">{% if r.status == 'error' %}<span class="badge l-bad">échec</span>
+              {% elif item.finished %}<span class="badge l-ok">terminé</span>
+              {% else %}<span class="badge l-run">en cours</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}<p class="empty">Aucun scénario lancé pour l'instant.</p>{% endif %}
+    </div>
+  </div>
+  <form class="panel" method="post" action="/budget" data-sign>
+    <h2>Budget du mois</h2>
+    <div id="budget" data-live>
+      <p>{% if budget.value is not none %}<b>{{ budget.value }} €</b>{% else %}inconnu{% endif %}
+        {% if budget.spent is not none %} · déjà dépensé {{ '%.4f'|format(budget.spent) }} €{% endif %}<br>
+        <span class="muted">{% if budget.live is not none %}réglé en direct, lu par l'agent Coûts à chaque estimation{% else %}budget de configuration de l'agent Coûts (MONTHLY_BUDGET){% endif %}</span></p>
+    </div>
+    <p class="muted">Les scénarios 1 et 4 le règlent large (retrain automatique) ; le scénario 3 le règle juste
+      au-dessus de la dépense du mois (un mois de données passe, trois non).</p>
+    <div class="scen-actions">
+      <input name="budget" inputmode="decimal" placeholder="ex. 20" size="8" aria-label="Budget en euros">
+      <input type="hidden" name="who">
+      <button class="go" name="action" value="set">Régler</button>
+      <button name="action" value="reset">Budget de configuration</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from agents.cost.sql_store import model_costs
+from common import budget as live_budget
 from common import config
 from common.action_log import action_log
 from common.llm import LLMError, OllamaClient
@@ -51,7 +52,11 @@ def previous_month(month: str) -> str:
 
 
 def current_budget(conn) -> float:
-    """Budget de l'agent Coûts : celui de sa dernière estimation (il peut différer de ce conteneur)."""
+    """Budget de l'agent Coûts : celui réglé en direct, sinon celui de sa dernière estimation
+    (il peut différer de ce conteneur)."""
+    live = live_budget.current()
+    if live is not None:
+        return live
     last = conn.execute(select(action_log.c.details).where(action_log.c.agent == AGENT,
                                                            action_log.c.action == "cost_estimated")
                         .order_by(action_log.c.id.desc()).limit(1)).scalar()

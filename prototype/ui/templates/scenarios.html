@@ -29,7 +29,7 @@
             {% if s.with_month %}
               <select name="month" aria-label="Mois contrôlé">
                 {% for mo in range(2, 13) %}{% set key = '2023-%02d'|format(mo) %}
-                  <option value="{{ mo }}" {{ 'selected' if mo == 3 and s.key == 'drift' }}>{{ key }}{{ ' · déjà entraîné' if key in trained and s.key == 'drift' }}</option>
+                  <option value="{{ mo }}" {{ 'selected' if mo == 3 and s.key in ('drift', 'suspect') }}>{{ key }}{{ ' · déjà entraîné' if key in trained and s.key == 'drift' }}</option>
                 {% endfor %}
               </select>
             {% endif %}

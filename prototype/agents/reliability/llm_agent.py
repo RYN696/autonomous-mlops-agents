@@ -172,6 +172,9 @@ class LLMReliabilityAgent:
         self.signals = self.collector.collect(self.window, self.now)
         self._track_version()
         self.trend.append(self._measures())
+        c = self.version_change
+        if c is not None and c["vers"] == self.version_seen and guards.healthy(self.trend[-1]):
+            c["sain_apres"] = True       # la nouvelle version a fonctionné (voir guards.bad_model)
         inc = self.incident
         if inc and inc.last_action_at is not None and self.now > inc.last_action_at:
             if inc.api_restart_deadline is not None:
@@ -313,6 +316,15 @@ class LLMReliabilityAgent:
     def _bad_model_rule(self) -> str | None:
         return guards.bad_model(self.version_change, self.trend[-1], self.signals, self.now)
 
+    def _model_rule(self) -> str | None:
+        """Règles déterministes qui désignent le modèle : promotion qui casse tout de suite le service,
+        ou redémarrage déjà tenté sans effet après une promotion récente."""
+        rule = self._bad_model_rule()
+        if rule is None and self.incident is not None:
+            rule = guards.restart_did_not_help(self.version_change, self.incident.actions, self.trend[-1],
+                                               self.signals, self.now)
+        return rule
+
     def _phase_detection(self) -> bool:
         context = self._detection_context()
         answer = self._ask("detection", DETECTION_PROMPT, context, schema=DETECTION_SCHEMA)
@@ -365,7 +377,7 @@ class LLMReliabilityAgent:
         }
 
     def _phase_action(self) -> None:
-        rule = self._bad_model_rule()
+        rule = self._model_rule()
         tried = [a["action"] for a in self.incident.actions]
         if rule and Action.ROLLBACK_MODEL.value not in tried:
             # Décision critique prise par une règle, pas par un LLM (ni l'agent, ni le juge)
@@ -377,6 +389,14 @@ class LLMReliabilityAgent:
             return
         if self.signals is not None and self.signals.mlflow_ok is False:
             self._mlflow_down_rule(tried)
+            return
+        first = guards.restart_first(self.version_change, self.incident.actions, self.trend[-1], self.signals,
+                                     self.now)
+        if first and self.autonomy.get(Action.RESTART_API.value) == "auto":
+            # vu en direct : le LLM choisissait le mode dégradé, qui masque les erreurs d'un modèle cassé
+            # (l'incident se fermait, la version défaillante restait en production)
+            self.tool_executer_action(action=Action.RESTART_API.value, justification=first,
+                                      regle="premier_essai_redemarrage")
             return
         context, history = self._action_context(), []
         for _ in range(config.LLM_MAX_PROPOSALS):
@@ -462,6 +482,10 @@ class LLMReliabilityAgent:
             checked = "attendre" if since and guards.healthy(since[-1]) else "pas_repare"
         elif verdict == "aggrave" and not guards.worse(inc.before_last_action, since[-1] if since else None):
             checked = "pas_repare"
+        elif (verdict not in ("pas_repare", "non_repare", "aggrave")
+              and len(since) >= config.RELIABILITY_NOT_REPAIRED_CYCLES
+              and not any(guards.healthy(m) for m in since[-config.RELIABILITY_NOT_REPAIRED_CYCLES:])):
+            checked = "pas_repare"       # toujours en erreur ~1 min après l'action : elle n'a pas suffi
         if checked != verdict:
             log.info("Verdict '%s' du LLM corrigé en '%s' d'après les mesures", verdict, checked)
             self._record("verdict_corrected", {"incident_id": inc.id, "llm": verdict, "retenu": checked,

@@ -48,6 +48,7 @@ class CostAgent:
         config: Optional[CostConfig] = None,
         collector: Optional[CpuCollector] = None,
         clock: Callable[[], datetime] = datetime.now,
+        budget: Optional[Callable[[], float]] = None,
     ) -> None:
         self.store = store
         self.bus = bus
@@ -55,6 +56,8 @@ class CostAgent:
         self.config = config or CostConfig()
         self.collector = collector
         self.clock = clock
+        # budget du mois : réglable en direct (common/budget.py), sinon celui de la configuration
+        self.budget = budget or (lambda: self.config.monthly_budget)
         self._last_cpu: Dict[str, float] = {}
         self.last_cpu_delta: Optional[float] = None  # CPU du dernier record_serving_sample (None : pas de base)
 
@@ -79,7 +82,7 @@ class CostAgent:
         options = pricing.price_options(cpu, self.config)
         estimate = options["standard"]["cost"]
         month_total = self.store.month_total(month)
-        budget = self.config.monthly_budget
+        budget = self.budget()
         exceeds = calculator.would_exceed(month_total, estimate, budget)
 
         answer = {

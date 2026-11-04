@@ -41,12 +41,29 @@ def read_dataframe(year: int, month: int) -> pd.DataFrame:
     if not path.exists():
         print(f"Téléchargement de {path.name}…")
         download(URL.format(year=year, month=month), path)
-    df = pd.read_parquet(path)
+    return clean(pd.read_parquet(path))
 
+
+def clean(df: pd.DataFrame) -> pd.DataFrame:
+    """Durée en minutes, trajets de 1 à 60 min gardés (le reste est écarté de l'entraînement)."""
+    df = df.copy()
     df[TARGET] = (df.lpep_dropoff_datetime - df.lpep_pickup_datetime).dt.total_seconds() / 60
     df = df[(df[TARGET] >= 1) & (df[TARGET] <= 60)].copy()
     df[CATEGORICAL] = df[CATEGORICAL].astype(str)
     return df
+
+
+def data_file(relative: str) -> Path:
+    """Fichier reçu dans data/ (ex. incoming/...parquet) ; refuse tout chemin qui sort de data/."""
+    path = (DATA_DIR / relative).resolve()
+    if DATA_DIR.resolve() not in path.parents:
+        raise ValueError(f"fichier hors de data/ : {relative}")
+    return path
+
+
+def read_file(relative: str) -> pd.DataFrame:
+    """Lit et nettoie un fichier de données reçu (même préparation qu'un mois téléchargé)."""
+    return clean(pd.read_parquet(data_file(relative)))
 
 
 def to_features(df: pd.DataFrame) -> list[dict]:

@@ -138,6 +138,40 @@ Qualité et Fiabilité utilisent Ollama, lancé **sur le PC** (`ollama serve`, m
 `qwen2.5:3b` et `llama3.2:3b`) : les conteneurs le joignent par
 `host.docker.internal`. Pour jouer des scénarios, voir la section suivante.
 
+## Storyboard : les 4 scénarios joués pour de vrai
+
+Page **Storyboard** de l'interface : les 4 scénarios du Design Thinking, chacun avec ses
+cases. **Lancer** prépare la situation, puis ce sont les agents qui réagissent seuls ; chaque
+case se coche avec ce qui s'est vraiment passé (versions, RMSE, coûts, heures). Si les agents
+prennent un autre chemin que l'histoire (ex. challenger pas assez meilleur), la case passe en
+**variante** : le résultat n'est jamais maquillé.
+
+| Scénario | Ce que « Lancer » prépare | Ce que font les agents |
+| --- | --- | --- |
+| 1. Dérive des données | budget large (20 €), dérive fabriquée sur le mois choisi | Qualité → orchestrateur (règle : retrain automatique) → Retrain → promotion si le challenger est meilleur d'au moins 2 % → un seul message, avec **Revenir à vN** |
+| 2. Panne du service | promeut une version qui plante sur les trajets de plus de 8 km (saine au calme), puis un pic de trafic | Fiabilité ouvre un incident → redémarre l'API → erreurs toujours là → règle : rollback vers la dernière version saine → rapport d'incident |
+| 3. Commande par chat et budget | budget serré (un mois d'entraînement passe, trois non), puis la phrase « @agents retrain le modèle taxi sur les 3 derniers mois » | le LLM comprend la phrase, le code la vérifie → Coûts : budget dépassé → question **Valider / Refuser** au responsable → retrain tracé |
+| 4. Le mauvais challenger | budget large, fichier reçu avec des valeurs aberrantes (`data/incoming/`) | Qualité : forte dérive, données suspectes (sous le seuil « corrompu ») → Retrain entraîne dessus → challenger moins bon → promotion bloquée → alerte « vérification humaine requise » avec **Voir les données** / **Ignorer** |
+
+Nouveautés derrière ces scénarios :
+
+- **Chat #mlops-agents** (`/chat`) : une phrase devient une action (LLM `CHAT_LLM_MODEL`,
+  `llama3.2:3b` ; des règles par mots-clés prennent le relais sans Ollama). Le code vérifie
+  le modèle et la période (1 à `CHAT_MAX_MONTHS` mois) ; la demande suit ensuite le même
+  graphe qu'une dérive (coût, règles d'autonomie, validation humaine).
+- **Budget du mois réglable en direct** (page Storyboard) : gardé dans Redis
+  (`common/budget.py`), relu par l'agent Coûts à chaque estimation. Sans réglage, chaque
+  agent garde `MONTHLY_BUDGET`.
+- **Données suspectes** : part de valeurs impossibles ≥ `SUSPECT_SHARE` (0,5 %) mais sous
+  `CRITICAL_INVALID_SHARE`. Un challenger *pire* que la production, entraîné sur ces données,
+  déclenche l'alerte `suspect_data_alert`.
+- **Fiabilité** : une version qui a d'abord fonctionné n'est plus désignée tout de suite par la
+  règle « mauvais modèle » ; si un redémarrage ne règle rien et qu'une version a été promue
+  depuis moins de `RELIABILITY_SUSPECT_MODEL_HOURS` h, la règle `restart_did_not_help` fait le
+  rollback. Une action suivie de `RELIABILITY_NOT_REPAIRED_CYCLES` mesures en erreur est jugée
+  « pas réparée » sans attendre le LLM.
+- Mêmes gestes humains depuis la page que sur Discord : **Revenir à vN**, **Ignorer**.
+
 ## Tester la pipeline avec l'interface
 
 Tout se fait depuis l'interface : la page **Scénarios de test** a un bouton par
@@ -167,10 +201,12 @@ Ce que chaque scénario doit montrer (avec la commande équivalente, si on préf
 | Dérive des données | `docker compose exec quality python -m agents.quality --year 2023 --month 3 --scenario drift` | Parcours « Dérive 2023-03 » et une question dans **À valider**. Cliquer **Valider** : Retrain optimise les réglages (Optuna) puis entraîne (quelques minutes), puis promotion ou promotion bloquée, avec un message qui l'explique |
 | Refus humain | même commande avec `--month 4`, puis **Refuser** | Parcours « Refusé par un humain », la production ne change pas |
 | Données corrompues | `docker compose exec quality python -m agents.quality --year 2023 --month 2 --scenario corrupted` | Parcours « Données corrompues », aucun réentraînement |
+| Données suspectes | même commande avec `--month 3 --scenario suspect` | Retrain sur le fichier reçu, promotion bloquée, alerte « données suspectes » |
 | Crash de l'API | `python -m scripts.inject_failure crash` | Incident `api_arretee`, Fiabilité redémarre l'API, puis « Résolu en … s » |
 | Erreurs 500 | `python -m scripts.inject_failure errors` | Incident, décisions du LLM et du juge, action de Fiabilité étape par étape |
 | Latence | `python -m scripts.inject_failure latency` | Même déroulé, cause latence |
 | Mauvais modèle | `python -m scripts.inject_failure bad-model` | Rollback automatique vers la version précédente (règle déterministe) |
+| Modèle défaillant sous la charge | `python -m scripts.inject_failure flaky-model`, puis **Démarrer le trafic** | Saine au calme ; avec du trafic : incident, redémarrage sans effet, puis rollback (règle `restart_did_not_help`) |
 | MLflow en panne | `python -m scripts.inject_failure mlflow-down` | Mode dégradé et demande d'intervention humaine (relancer MLflow demande une validation) |
 | Dérive pendant une panne | `crash`, puis tout de suite la dérive | Parcours de dérive « Mise de côté : incident en cours » |
 

@@ -41,6 +41,9 @@ MAX_TRIP_MINUTES = float(os.getenv("MAX_TRIP_MINUTES", "60"))
 MAX_PASSENGERS = int(os.getenv("MAX_PASSENGERS", "8"))
 MAX_TRIP_DISTANCE = float(os.getenv("MAX_TRIP_DISTANCE", "100"))
 CRITICAL_INVALID_SHARE = float(os.getenv("CRITICAL_INVALID_SHARE", "0.05"))
+# Valeurs impossibles (durée négative, distance > MAX_TRIP_DISTANCE) : au-delà de cette part, les données
+# sont "suspectes" (sous le seuil critique, Qualité laisse passer, mais l'humain sera prévenu)
+SUSPECT_SHARE = float(os.getenv("SUSPECT_SHARE", "0.005"))
 
 COLUMN_DRIFT_THRESHOLD = float(os.getenv("COLUMN_DRIFT_THRESHOLD", "0.1"))
 
@@ -78,6 +81,10 @@ RELIABILITY_RESTART_GRACE_SECONDS = float(os.getenv("RELIABILITY_RESTART_GRACE_S
 RELIABILITY_WORSE_MARGIN_PCT = float(os.getenv("RELIABILITY_WORSE_MARGIN_PCT", "5"))  # "aggravé" = + de 5 points
 RELIABILITY_SATURATION_PCT = float(os.getenv("RELIABILITY_SATURATION_PCT", "90"))  # mémoire / CPU saturés
 RELIABILITY_BAD_MODEL_WINDOW_SECONDS = float(os.getenv("RELIABILITY_BAD_MODEL_WINDOW_SECONDS", "1800"))
+# Redémarrage sans effet et modèle promu depuis moins de N h : le modèle est suspect -> rollback
+RELIABILITY_SUSPECT_MODEL_HOURS = float(os.getenv("RELIABILITY_SUSPECT_MODEL_HOURS", "24"))
+# Mesures toutes hors objectif après une action : au-delà, l'action n'a pas réparé (sans attendre le LLM)
+RELIABILITY_NOT_REPAIRED_CYCLES = int(os.getenv("RELIABILITY_NOT_REPAIRED_CYCLES", "3"))
 
 COST_PER_CPU_SECOND = float(os.getenv("COST_PER_CPU_SECOND", "0.0005"))
 COST_SPOT_DISCOUNT = float(os.getenv("COST_SPOT_DISCOUNT", "0.6"))
@@ -91,6 +98,10 @@ COST_SERVER_SIZE = os.getenv("COST_SERVER_SIZE", "S")                  # taille 
 COST_TICK_SECONDS = float(os.getenv("COST_TICK_SECONDS", "60"))        # boucle de fond : coût servi, inactivité, taille
 COST_LLM_MODEL = os.getenv("COST_LLM_MODEL", "llama3.2:3b")             # explique le rapport de coûts (ne décide rien)
 COST_LLM_TIMEOUT_SECONDS = float(os.getenv("COST_LLM_TIMEOUT_SECONDS", "120"))
+# Commandes en langage naturel (canal #mlops-agents de l'interface) : le LLM comprend, le code vérifie
+CHAT_LLM_MODEL = os.getenv("CHAT_LLM_MODEL", "llama3.2:3b")
+CHAT_LLM_TIMEOUT_SECONDS = float(os.getenv("CHAT_LLM_TIMEOUT_SECONDS", "90"))
+CHAT_MAX_MONTHS = int(os.getenv("CHAT_MAX_MONTHS", "6"))  # période la plus longue acceptée en chat
 
 
 # --- LLM (Ollama, 100 % local) : ils prennent les décisions de l'agent Fiabilité (encadrées par guards.py) ---

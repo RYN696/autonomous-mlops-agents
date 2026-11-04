@@ -18,6 +18,7 @@ class ValidationResult:
     invalid_rows: int = 0
     invalid_share: float = 0.0
     share_missing_values: float = 0.0
+    impossible_share: float = 0.0   # durée négative ou distance hors limites : physiquement impossible
     reasons: list[str] = field(default_factory=list)
     missing_columns: list[str] = field(default_factory=list)
 
@@ -41,6 +42,7 @@ def validate_current_data(df: pd.DataFrame) -> ValidationResult:
         bad_passengers = p.notna() & ((p <= 0) | (p > config.MAX_PASSENGERS))
 
     bad_any = bad_duration | bad_distance | bad_passengers
+    impossible = (duration < 0) | bad_distance
     reasons = [name for name, mask in [
         ("invalid_duration", bad_duration),
         ("invalid_distance", bad_distance),
@@ -52,6 +54,7 @@ def validate_current_data(df: pd.DataFrame) -> ValidationResult:
         row_count=n,
         invalid_rows=int(bad_any.sum()),
         invalid_share=float(bad_any.sum() / n) if n else 0.0,
+        impossible_share=float(impossible.sum() / n) if n else 0.0,
         share_missing_values=float(df[list(REQUIRED_COLUMNS)].isna().mean().mean()) if n else 0.0,
         reasons=reasons,
     )

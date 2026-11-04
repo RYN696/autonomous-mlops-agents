@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Scénario {{ run.story.number }} · {{ run.story.title }}{% endblock %}
+{% block content %}
+{% set s = run.story %}
+<p class="muted"><a href="/storyboard">← Storyboard</a></p>
+<div class="story-top">
+  <div class="story-head">
+    <span class="snum">Scénario {{ s.number }}</span>
+    <h1>{{ s.title }}</h1>
+  </div>
+  <div class="objs">{% for o in s.objectives %}<span class="obj">{{ o }}</span>{% endfor %}</div>
+</div>
+<p class="sub story-summary">{{ s.summary }}</p>
+
+{% with messages = get_flashed_messages() %}
+  {% for msg in messages %}<div class="panel notice">{{ msg }}</div>{% endfor %}
+{% endwith %}
+
+<div id="story-live" data-live>
+  <div class="story-status">
+    <div class="steps big">{% for p in progress %}<span class="step s-{{ p.state }}" title="Case {{ p.n }} · {{ p.case.title }}"></span>{% endfor %}</div>
+    {% if run.status == 'error' %}<span class="badge l-bad">échec du lancement</span> <span class="muted">{{ run.error }}</span>
+    {% elif finished %}<span class="badge l-ok">terminé</span>
+    {% else %}<span class="badge l-run">en cours</span> <span class="muted">les agents travaillent, la page se met à jour toute seule</span>{% endif %}
+    <span class="muted" style="margin-left:auto">lancé à <span data-ts="{{ run.started|iso }}"></span>
+      {% if trace_id %} · <a href="/parcours/{{ trace_id }}">parcours {{ trace_id }}</a>{% endif %}</span>
+  </div>
+
+  {% for n in questions %}{{ m.question(n, next='/storyboard/' ~ run.id) }}{% endfor %}
+
+  <div class="grid cases">
+  {% for p in progress %}{% set c = p.case %}
+    <article class="panel case c-{{ p.state }}">
+      <div class="screen">
+        <div class="screen-bar"><span></span><span></span>
+          <b>{{ {'done': 'fait', 'variant': 'variante', 'failed': 'échec', 'current': 'en cours', 'pending': 'à venir'}[p.state] }}</b></div>
+        {% if p.detail %}<p class="mono">{{ p.detail }}</p>
+        {% elif p.state == 'current' %}<p class="mono muted">en attente des agents…</p>
+        {% else %}<p class="mono muted">—</p>{% endif %}
+
+        {# gestes humains de l'histoire, comme les boutons Discord #}
+        {% if p.state in ('done', 'variant') and p.n == progress|length and trace_id %}
+          <div class="screen-actions">
+            <a class="btn dark" href="/parcours/{{ trace_id }}">{% if s.key == 'panne' %}Ouvrir le rapport d'incident{% else %}Rapport{% endif %}</a>
+            {% if s.key == 'panne' and grafana %}<a class="btn" href="{{ grafana }}" target="_blank" rel="noopener">Tableau de bord</a>{% endif %}
+            {% if s.key == 'derive' and run.facts.rollback %}
+              <form method="post" action="/actions/rollback" data-sign>
+                <input type="hidden" name="target" value="{{ run.facts.rollback.target }}">
+                <input type="hidden" name="current" value="{{ run.facts.rollback.current }}">
+                <input type="hidden" name="request_id" value="{{ trace_id }}">
+                <input type="hidden" name="next" value="/storyboard/{{ run.id }}">
+                <input type="hidden" name="who">
+                <button>Revenir à v{{ run.facts.rollback.target }}</button>
+              </form>
+            {% endif %}
+            {% if s.key == 'challenger' %}
+              {% if run.facts.data_file %}<a class="btn dark" href="/donnees?fichier={{ run.facts.data_file|urlencode }}">Voir les données</a>{% endif %}
+              <form method="post" action="/actions/ignore" data-sign>
+                <input type="hidden" name="request_id" value="{{ trace_id }}">
+                <input type="hidden" name="next" value="/storyboard/{{ run.id }}">
+                <input type="hidden" name="who">
+                <button>Ignorer</button>
+              </form>
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
+      <div class="case-body">
+        <div class="case-meta">Case {{ p.n }} · {{ c.clock }}</div>
+        <h3>{{ c.title }}</h3>
+        <div class="speech"><span>Speech</span>{{ c.speech }}</div>
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+</div>
+
+<div class="grid two">
+  <div class="panel">
+    <h2>Journal du scénario</h2>
+    <div id="story-journal" data-live class="scroll">{{ m.log_table(rows) }}</div>
+  </div>
+  <div class="panel">
+    <h2>Mise en place</h2>
+    <div id="story-notes" data-live>
+      {% for ts, text in run.notes %}
+        <div class="msg"><span class="time"><span data-ts="{{ ts|iso }}"></span></span> {{ text }}</div>
+      {% else %}<p class="empty">Préparation…</p>{% endfor %}
+    </div>
+    {% if budget.value is not none %}<p class="muted">Budget du mois : {{ budget.value }} €.</p>{% endif %}
+  </div>
+</div>
+{% endblock %}

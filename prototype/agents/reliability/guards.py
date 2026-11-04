@@ -78,8 +78,12 @@ def worse(before: dict | None, after: dict | None) -> bool:
 
 def bad_model(change: dict | None, m: dict, s: Signals | None, now: float) -> str | None:
     """Promotion externe récente, service sain juste avant, erreurs depuis : le modèle est en
-    cause et la bonne action est le rollback. Renvoie la raison, ou None si la règle ne s'applique pas."""
+    cause et la bonne action est le rollback. Renvoie la raison, ou None si la règle ne s'applique pas.
+    Si la nouvelle version a d'abord fonctionné (sain_apres), les erreurs viennent peut-être d'ailleurs
+    (pic de trafic...) : la règle ne s'applique pas, voir restart_did_not_help."""
     if not change or not change["origine"].startswith("externe") or not change.get("sain_avant"):
+        return None
+    if change.get("sain_apres"):
         return None
     if now - change["at"] > config.RELIABILITY_BAD_MODEL_WINDOW_SECONDS:
         return None
@@ -91,6 +95,44 @@ def bad_model(change: dict | None, m: dict, s: Signals | None, now: float) -> st
     return (f"erreurs depuis la promotion externe de la v{change['vers']} "
             f"(v{change['de']} saine avant) : {m['erreurs_pct']} % d'erreurs, "
             f"{m['sondes_echec_pct']} % d'échecs aux sondes")
+
+
+def restart_did_not_help(change: dict | None, actions: list[dict], m: dict, s: Signals | None,
+                         now: float) -> str | None:
+    """Le redémarrage (la réponse la plus simple) a été fait et les erreurs restent, alors qu'une
+    nouvelle version du modèle a été promue récemment : c'est elle qui est en cause -> rollback vers la
+    dernière version saine. Renvoie la raison, ou None si la règle ne s'applique pas."""
+    if not change or not change["origine"].startswith("externe"):
+        return None
+    if now - change["at"] > config.RELIABILITY_SUSPECT_MODEL_HOURS * 3600:
+        return None
+    if not any(a["action"] in RESTARTS and a.get("success") for a in actions):
+        return None
+    if not m["api_joignable"] or not (m["erreurs_pct"] > error_threshold_pct()
+                                      or m["sondes_echec_pct"] > error_threshold_pct()):
+        return None
+    if s is not None and not s.mlflow_ok:       # sans MLflow, un rollback ferait perdre le modèle
+        return None
+    return (f"le redémarrage n'a pas suffi : {m['erreurs_pct']} % d'erreurs avec la v{change['vers']}, "
+            f"promue il y a {int((now - change['at']) // 60)} min (la v{change['de']} fonctionnait) : "
+            "retour à la dernière version saine")
+
+
+def restart_first(change: dict | None, actions: list[dict], m: dict, s: Signals | None, now: float) -> str | None:
+    """Erreurs 500 avec l'API joignable, après une promotion récente, et rien encore tenté : la première
+    réponse est la plus simple, redémarrer (sans risque, autorisée seule). Pas le mode dégradé : il
+    masquerait un modèle cassé, l'incident se fermerait et la version défaillante resterait en production.
+    Si le redémarrage ne suffit pas, restart_did_not_help désigne le modèle (rollback)."""
+    if not change or not change["origine"].startswith("externe") or not change.get("sain_avant") or actions:
+        return None
+    if now - change["at"] > config.RELIABILITY_SUSPECT_MODEL_HOURS * 3600:
+        return None
+    if not m["api_joignable"] or m["erreurs_pct"] <= error_threshold_pct():
+        return None
+    if s is not None and (not s.mlflow_ok or s.restarts_recent >= 3):
+        return None
+    return (f"{m['erreurs_pct']} % d'erreurs avec l'API joignable, v{change['vers']} promue il y a "
+            f"{int((now - change['at']) // 60)} min : premier essai, redémarrer l'API")
 
 
 DEPENDENCY_OF = {"mlflow_indisponible": "mlflow_ok", "redis_indisponible": "redis_ok",

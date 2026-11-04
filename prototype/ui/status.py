@@ -15,6 +15,7 @@ from typing import Any, Callable
 import requests
 from sqlalchemy import func, select, text
 
+from common import budget as live_budget
 from common import config
 from common.docker_project import compose_project
 
@@ -142,7 +143,9 @@ class PipelineStatus:
         except Exception:
             return None
         # Budget de l'agent Coûts (il peut différer de celui de ce conteneur) : lu dans sa dernière estimation
-        budget = (last or {}).get("budget", config.MONTHLY_BUDGET)
+        budget = live_budget.current()  # réglé en direct dans l'interface
+        if budget is None:
+            budget = (last or {}).get("budget", config.MONTHLY_BUDGET)
         total = float(sum(rows.values()))
         return {"month": month, "total": total, "training": float(rows.get("training", 0.0)),
                 "serving": float(rows.get("serving", 0.0)), "budget": budget,
