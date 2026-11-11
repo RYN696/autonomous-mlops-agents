@@ -26,6 +26,7 @@ class EventType(str, Enum):
     COST_ESTIMATED = "cost_estimated"
     BUDGET_EXCEEDED = "budget_exceeded"
     COST_RECOMMENDATION = "cost_recommendation"
+    COST_ANOMALY = "cost_anomaly"
     TRAINING_COMPLETED = "training_completed"
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_GIVEN = "approval_given"

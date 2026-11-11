@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Rapport de coûts{% endblock %}
+{% block content %}
+<h1>Rapport de coûts</h1>
+<p class="sub">Chiffres calculés par l'agent Coûts · le LLM ({{ model }}) ne fait que les expliquer.</p>
+
+<div id="cost-live" data-live>
+  {% if job.error %}<div class="panel notice">Le dernier rapport a échoué : {{ job.error }}</div>{% endif %}
+  {% if live %}
+  <div class="grid kpis">
+    <div class="kpi"><div class="label">Dépensé en {{ live.month }}</div>
+      <div class="value">{{ '%.4f'|format(live.total) }} €</div>
+      <div class="hint">budget {{ '%.4f'|format(live.budget) }} € · reste {{ '%.4f'|format(live.remaining) }} €</div>
+      <div class="bar {{ 'bad' if (live.share or 0) >= 1 else ('warn' if (live.share or 0) >= 0.8) }}"><span style="width: {{ [(live.share or 0) * 100, 100]|min }}%"></span></div></div>
+    <div class="kpi"><div class="label">Entraînement</div>
+      <div class="value">{{ '%.4f'|format(live.training) }} €</div>
+      <div class="hint">{{ live.trainings }} entraînement(s) · {{ '%.0f'|format(live.training_cpu_seconds) }} s de CPU</div></div>
+    <div class="kpi"><div class="label">API servie</div>
+      <div class="value">{{ '%.4f'|format(live.serving) }} €</div>
+      <div class="hint">mois précédent ({{ live.previous_month }}) : {{ '%.4f'|format(live.previous_total) }} €</div></div>
+    <div class="kpi"><div class="label">Projection fin de mois</div>
+      <div class="value">{{ '%.4f'|format(live.projection) ~ ' €' if live.projection is not none else '—' }}</div>
+      <div class="hint">{% if live.projection is not none %}au rythme des {{ live.days_elapsed }} premiers jours sur {{ live.days_in_month }}{% else %}disponible après le premier jour du mois{% endif %}</div></div>
+  </div>
+  {% endif %}
+
+  {% if charts %}{% set g = charts %}
+  <div class="grid charts">
+    <figure class="panel chart wide">
+      <figcaption><h2>Dépense cumulée du mois</h2>
+        <span class="legend"><i class="sw s-train"></i>dépense <i class="sw dash"></i>budget <i class="sw dots"></i>projection</span></figcaption>
+      {% set c = g.cumul %}
+      <svg viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="Dépense cumulée du mois, budget et projection">
+        {% for t in c.ticks %}<line class="grid-line" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+          <text class="tick" x="{{ g.pad.l - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ '%.2f'|format(t.v) if c.top < 10 else '%.0f'|format(t.v) }} €</text>{% endfor %}
+        {% for l in c.x_labels %}<text class="tick" x="{{ l.x }}" y="{{ c.h - 8 }}" text-anchor="middle">{{ l.day }}</text>{% endfor %}
+        {% if c.budget_y is not none %}<line class="budget-line" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ c.budget_y }}" y2="{{ c.budget_y }}"/>
+          <text class="ref-label" x="{{ g.pad.l + 6 }}" y="{{ c.budget_y - 6 }}">budget {{ '%.0f'|format(c.budget) }} €</text>{% endif %}
+        {% if c.projection %}{% set p = c.projection %}<line class="proj-line" x1="{{ p.x1 }}" y1="{{ p.y1 }}" x2="{{ p.x2 }}" y2="{{ p.y2 }}"/>
+          <text class="ref-label" x="{{ p.x2 }}" y="{{ p.y2 - 8 }}" text-anchor="end">projection {{ '%.2f'|format(p.value) }} €</text>{% endif %}
+        <polyline class="spend-line" points="{{ c.line }}"/>
+        {% if c.points %}{% set last = c.points[-1] %}<circle class="spend-dot" cx="{{ last.x }}" cy="{{ last.y }}" r="5"/>
+          <text class="ref-label strong" x="{{ last.x + 10 }}" y="{{ last.y - 8 }}">{{ '%.2f'|format(last.value) }} €</text>{% endif %}
+        {% for p in c.points %}<circle class="hit" cx="{{ p.x }}" cy="{{ p.y }}" r="10" data-tip="{{ p.day }} · {{ '%.4f'|format(p.value) }} € cumulés"/>{% endfor %}
+      </svg>
+    </figure>
+
+    <figure class="panel chart">
+      <figcaption><h2>Dépense par jour</h2>
+        <span class="legend"><i class="sw s-train"></i>entraînement <i class="sw s-serve"></i>API servie</span></figcaption>
+      {% set c = g.daily %}
+      <svg viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="Dépense par jour, entraînement et API servie">
+        {% for t in c.ticks %}<line class="grid-line" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+          <text class="tick" x="{{ g.pad.l - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ '%.2f'|format(t.v) }} €</text>{% endfor %}
+        {% for l in c.x_labels %}<text class="tick" x="{{ l.x }}" y="{{ c.h - 8 }}" text-anchor="middle">{{ l.day }}</text>{% endfor %}
+        {% for b in c.bars if not b.future and (b.training or b.serving) %}
+          <g class="bar-hit" data-tip="{{ b.day }} · entraînement {{ '%.4f'|format(b.training) }} € · API {{ '%.4f'|format(b.serving) }} €">
+            <rect class="hitbox" x="{{ b.x - 2 }}" y="{{ g.pad.t }}" width="{{ b.w + 4 }}" height="{{ c.base - g.pad.t }}"/>
+            {% if b.serving %}<rect class="s-serve" x="{{ b.x }}" y="{{ b.y_sv }}" width="{{ b.w }}" height="{{ b.h_sv }}" rx="2"/>{% endif %}
+            {% if b.training %}<rect class="s-train" x="{{ b.x }}" y="{{ b.y_tr }}" width="{{ b.w }}" height="{{ b.h_tr }}" rx="2"/>{% endif %}
+          </g>
+        {% endfor %}
+        <line class="axis" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ c.base }}" y2="{{ c.base }}"/>
+      </svg>
+    </figure>
+
+    <figure class="panel chart">
+      <figcaption><h2>Coût de chaque entraînement</h2>
+        <span class="legend"><i class="sw s-train"></i>normal <i class="sw s-spike"></i>pic ▲</span></figcaption>
+      {% set c = g.trainings %}
+      <svg viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="Coût de chaque entraînement du mois">
+        {% for t in c.ticks %}<line class="grid-line" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+          <text class="tick" x="{{ g.pad.l - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ '%.2f'|format(t.v) }} €</text>{% endfor %}
+        {% for b in c.bars %}
+          <g class="bar-hit" data-tip="{{ '%.4f'|format(b.cost) }} € · {{ '%.0f'|format(b.cpu) }} s de CPU{% if b.spike %} · pic ×{{ b.ratio }}{% endif %}{% if b.request_id %} · {{ b.request_id }}{% endif %}">
+            <rect class="hitbox" x="{{ b.x - 2 }}" y="{{ g.pad.t }}" width="{{ b.w + 4 }}" height="{{ c.base - g.pad.t }}"/>
+            <rect class="{{ 's-spike' if b.spike else 's-train' }}" x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ [b.h, 1]|max }}" rx="2"/>
+            {% if b.spike %}<text class="spike-mark" x="{{ b.x + b.w / 2 }}" y="{{ b.y - 5 }}" text-anchor="middle">▲</text>{% endif %}
+          </g>
+        {% else %}<text class="tick" x="{{ c.w / 2 }}" y="{{ c.h / 2 }}" text-anchor="middle">aucun entraînement ce mois</text>
+        {% endfor %}
+        <line class="axis" x1="{{ g.pad.l }}" x2="{{ c.w - g.pad.r }}" y1="{{ c.base }}" y2="{{ c.base }}"/>
+      </svg>
+    </figure>
+  </div>
+  {% endif %}
+
+  <form class="panel" method="post" action="/couts/rapport">
+    <button class="go" {{ 'disabled' if job.running }}>{{ 'Rapport en cours… (le LLM rédige)' if job.running else 'Générer le rapport du mois' }}</button>
+    <span class="muted">15 s à 2 min</span>
+  </form>
+
+  {% for r in reports %}{% set d = r.details %}
+    <div class="panel">
+      <h2>Rapport {{ d.month }} <span class="muted">· <span data-ts="{{ r.timestamp|iso }}" data-rel></span></span>
+        <span class="badge {{ 'l-ok' if d.source == 'llm' else 'l-warn' }}">{{ 'expliqué par ' ~ d.llm_model if d.source == 'llm' else 'texte du code' }}</span></h2>
+      <p>{{ d.explanation }}</p>
+      {% if d.source != 'llm' %}<p class="muted">{{ 'LLM injoignable : ' ~ d.llm_error if d.llm_error else 'Texte du LLM écarté (nombre absent des constats) : « ' ~ d.rejected_text ~ ' »' }}</p>{% endif %}
+      <details><summary>Constats calculés par le code</summary>
+        <ul>{% for f in d.findings %}<li>{{ f }}</li>{% endfor %}</ul>
+        {% if d.top_trainings %}<p><b>Entraînements les plus chers</b></p>
+        <ul>{% for t in d.top_trainings %}<li>{{ '%.4f'|format(t.cost or 0) }} € ({{ '%.0f'|format(t.cpu_seconds or 0) }} s de CPU){% if t.request_id %} · <a href="/parcours/{{ t.request_id }}">parcours {{ t.request_id }}</a>{% endif %}</li>{% endfor %}</ul>{% endif %}
+      </details>
+    </div>
+  {% else %}
+    <p class="empty">Aucun rapport pour l'instant : cliquer sur « Générer le rapport du mois ».</p>
+  {% endfor %}
+</div>
+{% endblock %}

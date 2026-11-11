@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Données reçues{% endblock %}
+{% block content %}
+<h1>Données reçues</h1>
+<p class="sub mono">{{ name }}</p>
+{% if error %}
+  <div class="panel notice">{{ error }}</div>
+{% else %}
+<div class="grid kpis">
+  <div class="kpi"><div class="label">Trajets</div><div class="value">{{ preview.rows }}</div></div>
+  <div class="kpi"><div class="label">Durées négatives</div><div class="value">{{ preview.negative }}</div>
+    <div class="hint">arrivée avant le départ</div></div>
+  <div class="kpi"><div class="label">Distances impossibles</div><div class="value">{{ preview.far }}</div>
+    <div class="hint">au-delà de {{ preview.max_distance|int }} miles</div></div>
+  <div class="kpi"><div class="label">Lignes aberrantes</div><div class="value">{{ '%.1f'|format(preview.share * 100) }} %</div>
+    <div class="hint">sous le seuil « corrompu » : Qualité les a laissées passer</div></div>
+</div>
+<div class="panel">
+  <h2>Extrait (lignes aberrantes en rouge)</h2>
+  <table class="data-table mono">
+    <thead><tr><th>durée (min)</th><th>distance</th><th>départ</th><th>arrivée</th></tr></thead>
+    <tbody>
+    {% for r in preview.sample %}
+      <tr class="{{ 'bad-row' if r.bad }}"><td>{{ r.duration }}</td><td>{{ r.distance }}</td><td>{{ r.pu }}</td><td>{{ r.do }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Le modèle de production n'a pas changé : à l'équipe de vérifier la source de ce fichier
+    avant tout nouveau réentraînement.</p>
+</div>
+{% endif %}
+{% endblock %}

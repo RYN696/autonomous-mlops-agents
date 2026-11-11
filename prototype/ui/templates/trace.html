@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}{{ t.title }}{% endblock %}
+{% block content %}
+<p class="muted"><a href="/parcours">← Parcours</a></p>
+<div id="trace" data-live>
+  <h1>{{ t.title }} {{ m.badge(t) }}</h1>
+  <p class="sub">
+    {{ 'Demande de réentraînement' if t.kind == 'retrain' else 'Incident' }} <code>{{ t.id }}</code> ·
+    début <span data-ts="{{ t.started|iso }}"></span> · durée {{ t.duration|duration }} · {{ t.steps|length }} étapes
+  </p>
+  <div class="flow">
+    {% for a in t.agents %}{{ m.chip(a) }}{% if not loop.last %}<span class="arrow">→</span>{% endif %}{% endfor %}
+  </div>
+
+  {% for s in t.steps if s.action == 'question' and s.details.status == 'pending' %}
+    <div style="margin-top:14px">{{ m.question(s.details, next='/parcours/' ~ t.id) }}</div>
+  {% endfor %}
+
+  {% for s in t.steps if s.action == 'retrain_report' %}
+    <div style="margin-top:16px">{{ m.report_card(s.details, s.ts, s.agent, open=True) }}</div>
+  {% endfor %}
+
+  <div class="panel" style="margin-top:16px">
+    <ol class="timeline">
+    {% for s in t.steps %}
+      <li class="{{ 'message' if s.is_message }}">
+        <div class="when"><b><span data-ts="{{ s.ts|iso }}"></span></b>+{{ s.offset|duration }}</div>
+        <div class="rail"><span class="dot {{ s.agent.color }}"></span></div>
+        <div class="body">
+          <div class="head">{{ m.chip(s.agent) }}<code>{{ s.action }}</code></div>
+          <div class="text">{{ s.summary }}</div>
+          <details id="s-{{ loop.index }}-{{ s.row_id or 'm' }}"><summary>détails</summary><pre class="json">{{ s.details|pretty }}</pre></details>
+        </div>
+      </li>
+    {% endfor %}
+    </ol>
+  </div>
+</div>
+{% endblock %}

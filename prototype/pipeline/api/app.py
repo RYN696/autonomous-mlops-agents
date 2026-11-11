@@ -38,6 +38,8 @@ MODEL_LOADED = Gauge("api_model_loaded", "1 si un modèle est chargé, 0 sinon")
 MODEL_VERSION = Gauge("api_model_version", "Version MLflow du modèle servi (0 si aucun)")
 DEGRADED_MODE = Gauge("api_degraded_mode", "1 si l'API sert le modèle de secours")
 FALLBACK_PREDICTIONS = Counter("api_fallback_predictions_total", "Prédictions servies par le modèle de secours")
+# --- Métriques (agent Coûts) : trafic réel, sans les sondes de l'agent Fiabilité ---
+USER_REQUESTS = Counter("api_user_requests_total", "Requêtes /predict des utilisateurs (sondes exclues)")
 
 
 @app.before_request
@@ -53,6 +55,8 @@ def _record_metrics(response: Response) -> Response:
     if endpoint != "/metrics":  # on ne mesure pas le scraping lui-même
         LATENCY.labels(endpoint).observe(time.perf_counter() - g.get("start", time.perf_counter()))
         REQUESTS.labels(endpoint, str(response.status_code)).inc()
+        if endpoint == "/predict" and request.headers.get(BYPASS_HEADER) != "1":
+            USER_REQUESTS.inc()
     return response
 
 

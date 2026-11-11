@@ -112,3 +112,17 @@ def test_fetch_snapshot_when_api_is_down():
     s = fetch_snapshot("http://api", session=DownSession())
     assert s.reachable is False
     assert "refused" in s.error
+
+def test_error_budget_consumption_and_sliding_window():
+    from agents.reliability.metrics import ErrorBudget, WindowStats
+
+    def win(errors, requests=1000):
+        return WindowStats(duration=15, reachable=True, requests=requests, errors=errors,
+                           error_rate=errors / requests, p95_latency=0.05, model_loaded=True,
+                           model_version=3, health_ok=True, counter_reset=False)
+
+    budget = ErrorBudget(target=0.99, window_seconds=3600)
+    budget.add(win(5), now=0)                   # 5 erreurs, 10 autorisées
+    assert budget.consumed() == pytest.approx(0.5)
+    budget.add(win(0), now=4000)                # 1 h plus tard : les vieilles erreurs sortent
+    assert budget.consumed() == 0.0

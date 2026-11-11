@@ -51,23 +51,151 @@ services:
     container_name: mlops-api
     init: true
 
-  retrain:
+  init:
+    # Premier démarrage : entraîne et met en production un premier modèle s'il n'y en a pas
+    # (télécharge les données la première fois), puis s'arrête. Ne refait rien ensuite.
     build: .
-    command: python -m agents.retrain
+    command: python -m pipeline.bootstrap
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
-      REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
       API_URL: http://api:9696
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./data:/app/data
     depends_on:
       - mlflow
+      - api
+    restart: "no"
+
+  retrain:
+    build: .
+    command: python -m agents.retrain
+    environment:
+      LLM_API_KEY: ${LLM_API_KEY:-}         # lue dans .env ; vide = message sans LLM
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-oss-20b}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
+      API_URL: http://api:9696
+      PYTHONUNBUFFERED: "1"
+      RETRAIN_COOLDOWN_MINUTES: "0"   # démo : pas de pause entre deux entraînements
+      MIN_IMPROVEMENT: "0.02"       
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      mlflow:
+        condition: service_started
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      api:
+        condition: service_started
+      init:
+        condition: service_completed_successfully  # un modèle est en production
+    restart: unless-stopped
+  cost:
+    build: .
+    command: python -m agents.cost
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
+      MONTHLY_BUDGET: "0.01"   # mettre "0.1" pour la démo du scénario 3 (budget dépassé)
+      API_URL: http://api:9696
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # lecture du CPU de l'API (coût servi, taille du serveur)
+    depends_on:
       - redis
       - postgres
       - api
     restart: unless-stopped
+
+  quality:
+    build: .
+    command: python -m agents.quality --year 2023 --month 2 --watch
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
+      QUALITY_OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434}  # Ollama tourne sur le PC
+      # même petit modèle que le juge de Fiabilité, déjà en mémoire : charger llama3.1:8b (5,6 Go) sur une carte
+      # de 4 Go chassait les modèles de Fiabilité et bloquait Ollama plusieurs minutes (vu en direct)
+      QUALITY_LLM_MODEL: ${QUALITY_LLM_MODEL:-llama3.2:3b}
+      QUALITY_CHECK_MINUTES: "10"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # pour Linux (déjà défini sous Docker Desktop)
+    depends_on:
+      mlflow:
+        condition: service_started
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      init:
+        condition: service_completed_successfully  # la dérive se mesure contre le modèle en production
+    restart: unless-stopped
+
+  reliability:
+    build: .
+    command: python -m agents.reliability
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
+      API_URL: http://api:9696
+      OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # restart / recreate des conteneurs autorisés
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      api:
+        condition: service_started
+      mlflow:
+        condition: service_started
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+      init:
+        condition: service_completed_successfully  # pas d'incident "API sans modèle" au premier lancement
+    restart: unless-stopped
+
+  orchestrator:
+    build: .
+    command: python -m agents.orchestrator
+    ports:
+      - "${ORCHESTRATOR_HOST_PORT:-8080}:8080"  # autre port si 8080 est pris (ex. Oracle)
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://mlops:mlops@postgres:5432/mlops
+      MLFLOW_TRACKING_URI: http://mlflow:5000   # interface : modèle en production
+      API_URL: http://api:9696                  # interface : santé de l'API
+      OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434}  # interface : état d'Ollama
+      DEMO_CONTROLS: "1"                        # interface : page Scénarios (boutons de dérive et de panne)
+      # Discord (facultatif, valeurs dans .env) : messages et boutons sur Discord en plus de la page web
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_ALERTS_CHANNEL_ID: ${DISCORD_ALERTS_CHANNEL_ID:-}
+      DISCORD_AGENTS_CHANNEL_ID: ${DISCORD_AGENTS_CHANNEL_ID:-}
+      DISCORD_ALERT_MENTION: ${DISCORD_ALERT_MENTION:-}
+      UI_PUBLIC_URL: http://localhost:${ORCHESTRATOR_HOST_PORT:-8080}  # liens « Rapport » des messages Discord
+      GRAFANA_PUBLIC_URL: http://localhost:3000                        # lien « Tableau de bord »
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # interface : état des conteneurs, page Scénarios
+      - ./data:/app/data:ro                         # interface : « Voir les données » d'un fichier reçu
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped    
 volumes:
   mlflow_data:
   postgres_data:

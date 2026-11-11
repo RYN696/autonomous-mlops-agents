@@ -24,3 +24,8 @@ def local_mlflow(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MLFLOW_TRACKING_URI", uri)
     monkeypatch.setattr("pipeline.train.read_dataframe", synthetic_month)
     return uri
+
+@pytest.fixture(autouse=True)
+def no_live_budget(monkeypatch):
+    """Le budget réglé en direct vit dans Redis : les tests ne doivent pas lire celui de la stack locale."""
+    monkeypatch.setattr("common.budget.current", lambda client=None: None)

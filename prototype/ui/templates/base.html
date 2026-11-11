@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Pipeline MLOps{% endblock %} · Taxi NYC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="layout">
+  <nav class="side">
+    <a class="brand" href="/">
+      <span class="logo">NYC</span>
+      <span><strong>Salle de contrôle</strong><small>taxi-duration · 5 agents</small></span>
+    </a>
+    <a href="/" class="{{ 'on' if path == '/' }}">Vue d'ensemble
+      {% if pending_count %}<span class="count">{{ pending_count }}</span>{% endif %}</a>
+    <a href="/storyboard" class="{{ 'on' if path.startswith('/storyboard') }}">Storyboard · 4 scénarios</a>
+    <a href="/chat" class="{{ 'on' if path.startswith('/chat') }}">Chat #mlops-agents</a>
+    <a href="/parcours" class="{{ 'on' if path.startswith('/parcours') }}">Parcours</a>
+    <a href="/journal" class="{{ 'on' if path.startswith('/journal') }}">Journal d'actions</a>
+    <a href="/rapports" class="{{ 'on' if path.startswith('/rapports') }}">Rapports des agents</a>
+    <a href="/couts" class="{{ 'on' if path.startswith('/couts') }}">Rapport de coûts</a>
+    <a href="/scenarios" class="{{ 'on' if path.startswith('/scenarios') }}">Scénarios de test</a>
+    {% if has_graph %}<a href="/graph" class="{{ 'on' if path == '/graph' }}">Graphes LangGraph</a>{% endif %}
+    <div class="side-title">Agents</div>
+    {% for a in agents %}
+      <a href="/agents/{{ a.key }}" class="{{ 'on' if path == '/agents/' ~ a.key }}">
+        <span class="dot {{ a.color }}"></span>{{ a.name }}</a>
+    {% endfor %}
+    <label class="side-title" for="who">Signer en tant que</label>
+    <input id="who" placeholder="prénom" style="margin: 0 10px">
+    <div class="side-foot">
+      <span class="live-dot"></span> <span id="refreshed">en direct</span>
+    </div>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

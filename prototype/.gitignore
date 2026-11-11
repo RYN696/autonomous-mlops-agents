@@ -7,3 +7,6 @@ mlruns/
 mlartifacts/
 mlflow.db
 run_id.txt
+
+# Gabarits de l'interface (le .gitignore racine du cours ignore *.html)
+!ui/templates/*.html

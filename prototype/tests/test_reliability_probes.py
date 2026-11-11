@@ -26,15 +26,12 @@ def test_probes_count_5xx_and_connection_errors_and_bypass_degraded_mode():
     result = run_probes("http://api", count=5, session=session)
     assert result.sent == 5
     assert result.failed == 3
-    assert result.ok is False
     assert all(h == {"X-Bypass-Degraded": "1"} for h in session.headers_seen)
 
 
-def test_probe_result_thresholds():
-    assert ProbeResult(sent=10, failed=0, p95_latency=0.02).ok
-    assert not ProbeResult(sent=10, failed=1, p95_latency=0.02).ok      # 10 % > 5 %
-    assert not ProbeResult(sent=10, failed=0, p95_latency=2.0).ok       # trop lent
-    assert ProbeResult(sent=0, failed=0, p95_latency=None).ok           # sondes désactivées
+def test_failure_rate():
+    assert ProbeResult(sent=10, failed=3, p95_latency=0.02).failure_rate == 0.3
+    assert ProbeResult(sent=0, failed=0, p95_latency=None).failure_rate == 0.0
 
 
 def test_percentile_nearest_rank():

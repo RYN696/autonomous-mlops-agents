@@ -47,17 +47,21 @@ def has_production_model(client: MlflowClient) -> bool:
         return False
 
 
-def fit_and_register(df_train: pd.DataFrame, df_test: pd.DataFrame, tags: dict | None = None) -> dict:
+def fit_and_register(
+    df_train: pd.DataFrame, df_test: pd.DataFrame, tags: dict | None = None, params: dict | None = None
+) -> dict:
     """Entraîne le pipeline, mesure le RMSE sur df_test et enregistre le modèle dans MLflow.
 
     Ne touche pas à l'alias production : c'est à l'appelant de décider.
+    `params` remplace une partie des réglages par défaut (PARAMS), par exemple après une optimisation.
     """
+    params = {**PARAMS, **(params or {})}
     mlflow.set_tracking_uri(config.MLFLOW_TRACKING_URI)
     mlflow.set_experiment(config.EXPERIMENT_NAME)
-    pipeline = make_pipeline(DictVectorizer(), xgb.XGBRegressor(**PARAMS))
+    pipeline = make_pipeline(DictVectorizer(), xgb.XGBRegressor(**params))
 
     with mlflow.start_run(tags=tags) as run:
-        mlflow.log_params(PARAMS)
+        mlflow.log_params(params)
         start = time.perf_counter()
         pipeline.fit(to_features(df_train), df_train[TARGET].values)
         training_seconds = time.perf_counter() - start

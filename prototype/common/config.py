@@ -22,9 +22,15 @@ DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "0.5"))
 MIN_IMPROVEMENT = float(os.getenv("MIN_IMPROVEMENT", "0.02"))  # 2 % d'erreur en moins
 RETRAIN_COOLDOWN_MINUTES = float(os.getenv("RETRAIN_COOLDOWN_MINUTES", "60"))  # pause entre deux entraînements
 DEFAULT_TRAIN_MONTHS = int(os.getenv("DEFAULT_TRAIN_MONTHS", "1"))  # mois d'entraînement si aucune période
+RETRAIN_TUNING_TRIALS = int(os.getenv("RETRAIN_TUNING_TRIALS", "20"))  # essais Optuna (0 = pas d'optimisation)
 MAX_ERROR_RATE = float(os.getenv("MAX_ERROR_RATE", "0.05"))
 MAX_LATENCY_SECONDS = float(os.getenv("MAX_LATENCY_SECONDS", "1.0"))
-
+# LLM (explication des décisions de Retrain) : API Grok de xAI
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")  # vide = message écrit par le code, sans LLM
+LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
+LLM_API_URL = os.getenv("LLM_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+# nom distinct de LLM_TIMEOUT_SECONDS (Ollama, agent Fiabilité, 120 s) : sinon l'un écrase l'autre
+RETRAIN_LLM_TIMEOUT_SECONDS = float(os.getenv("RETRAIN_LLM_TIMEOUT_SECONDS", "30"))
 # Coûts (tarif fictif pour le prototype)
 CPU_HOUR_PRICE = float(os.getenv("CPU_HOUR_PRICE", "0.05"))
 MONTHLY_BUDGET = float(os.getenv("MONTHLY_BUDGET", "20.0"))
@@ -35,6 +41,9 @@ MAX_TRIP_MINUTES = float(os.getenv("MAX_TRIP_MINUTES", "60"))
 MAX_PASSENGERS = int(os.getenv("MAX_PASSENGERS", "8"))
 MAX_TRIP_DISTANCE = float(os.getenv("MAX_TRIP_DISTANCE", "100"))
 CRITICAL_INVALID_SHARE = float(os.getenv("CRITICAL_INVALID_SHARE", "0.05"))
+# Valeurs impossibles (durée négative, distance > MAX_TRIP_DISTANCE) : au-delà de cette part, les données
+# sont "suspectes" (sous le seuil critique, Qualité laisse passer, mais l'humain sera prévenu)
+SUSPECT_SHARE = float(os.getenv("SUSPECT_SHARE", "0.005"))
 
 COLUMN_DRIFT_THRESHOLD = float(os.getenv("COLUMN_DRIFT_THRESHOLD", "0.1"))
 
@@ -43,17 +52,8 @@ COLUMN_DRIFT_THRESHOLD = float(os.getenv("COLUMN_DRIFT_THRESHOLD", "0.1"))
 MONITORED_ENDPOINT = os.getenv("MONITORED_ENDPOINT", "/predict")  # route dont on surveille le SLO
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "3"))  # au-delà, l'API est jugée injoignable
 MIN_REQUESTS = int(os.getenv("MIN_REQUESTS", "10"))  # en dessous, le taux d'erreurs n'est pas significatif
-HIGH_ERROR_RATE = float(os.getenv("HIGH_ERROR_RATE", "0.20"))
-CRITICAL_ERROR_RATE = float(os.getenv("CRITICAL_ERROR_RATE", "0.50"))  # au-delà : critique d'office
-HIGH_LATENCY_SECONDS = float(os.getenv("HIGH_LATENCY_SECONDS", "3.0"))
 SLO_TARGET = float(os.getenv("SLO_TARGET", "0.99"))  # 99 % de requêtes réussies
 SLO_WINDOW_MINUTES = float(os.getenv("SLO_WINDOW_MINUTES", "60"))
-SEVERITY_MEDIUM_SCORE = int(os.getenv("SEVERITY_MEDIUM_SCORE", "4"))
-SEVERITY_HIGH_SCORE = int(os.getenv("SEVERITY_HIGH_SCORE", "7"))
-CRASH_LOOP_RESTARTS = int(os.getenv("CRASH_LOOP_RESTARTS", "3"))  # redémarrages en 10 min = boucle de crash
-RESOURCE_MEMORY_PERCENT = float(os.getenv("RESOURCE_MEMORY_PERCENT", "90"))
-RESOURCE_CPU_PERCENT = float(os.getenv("RESOURCE_CPU_PERCENT", "95"))
-BAD_MODEL_WINDOW_MINUTES = float(os.getenv("BAD_MODEL_WINDOW_MINUTES", "30"))  # modèle promu récemment = suspect
 API_CONTAINER_NAME = os.getenv("API_CONTAINER_NAME", "mlops-api")
 API_SERVICE_NAME = os.getenv("API_SERVICE_NAME", "api")  # nom du service dans docker-compose.yml
 REDIS_CONTAINER_NAME = os.getenv("REDIS_CONTAINER_NAME", "mlops-redis")
@@ -61,20 +61,30 @@ MLFLOW_CONTAINER_NAME = os.getenv("MLFLOW_CONTAINER_NAME", "mlops-mlflow")
 # Seuls conteneurs que l'agent a le droit de toucher (jamais Postgres)
 ALLOWED_CONTAINERS = (API_CONTAINER_NAME, REDIS_CONTAINER_NAME, MLFLOW_CONTAINER_NAME)
 ACTION_HTTP_TIMEOUT_SECONDS = float(os.getenv("ACTION_HTTP_TIMEOUT_SECONDS", "30"))  # /reload peut prendre plusieurs secondes
+# Le client MLflow réessaie par défaut jusqu'à 7 fois (backoff x2, jusqu'à 120 s de délai) : pendant
+# une panne MLflow, un simple snapshot avant action bloquerait l'agent plusieurs minutes. Ici, un
+# échec rapide suffit (le code traite déjà l'absence de MLflow comme un fait, pas une erreur fatale).
+RELIABILITY_MLFLOW_HTTP_MAX_RETRIES = int(os.getenv("RELIABILITY_MLFLOW_HTTP_MAX_RETRIES", "1"))
+# Entier : MLflow fait int(valeur) sur cette variable, "3.0" lèverait une ValueError.
+RELIABILITY_MLFLOW_HTTP_TIMEOUT_SECONDS = int(os.getenv("RELIABILITY_MLFLOW_HTTP_TIMEOUT_SECONDS", "3"))
 # Modèle de secours du mode dégradé : durée = base + minutes_par_mile x distance
 FALLBACK_BASE_MINUTES = float(os.getenv("FALLBACK_BASE_MINUTES", "4.0"))
 FALLBACK_MINUTES_PER_MILE = float(os.getenv("FALLBACK_MINUTES_PER_MILE", "3.5"))
 # Boucle de l'agent
 RELIABILITY_POLL_SECONDS = float(os.getenv("RELIABILITY_POLL_SECONDS", "15"))
 PROBE_COUNT = int(os.getenv("PROBE_COUNT", "10"))  # sondes par cycle (>= MIN_REQUESTS : mesure fiable sans trafic)
-CONSECUTIVE_BREACHES = int(os.getenv("CONSECUTIVE_BREACHES", "2"))  # dépassements de suite avant d'ouvrir un incident
-CONSECUTIVE_OK_TO_RESOLVE = int(os.getenv("CONSECUTIVE_OK_TO_RESOLVE", "2"))  # cycles OK de suite avant de clore
-VERIFY_WAIT_SECONDS = float(os.getenv("VERIFY_WAIT_SECONDS", "20"))  # délai laissé à une action avant de la juger
-MAX_RESTARTS_PER_HOUR = int(os.getenv("MAX_RESTARTS_PER_HOUR", "3"))  # anti-boucle
-ESCALATION_REMINDER_MINUTES = float(os.getenv("ESCALATION_REMINDER_MINUTES", "15"))
-VERIFY_MAX_WAIT_SECONDS = float(os.getenv("VERIFY_MAX_WAIT_SECONDS", "60"))  # attente max qu'une API redémarrée réponde
 PROBE_MAX_CONSECUTIVE_FAILURES = int(os.getenv("PROBE_MAX_CONSECUTIVE_FAILURES", "2"))  # au-delà, API jugée HS : on arrête les sondes
 FAULT_INJECTION = os.getenv("FAULT_INJECTION", "0") == "1"  # route /fault de démo, désactivée par défaut
+# Règles déterministes autour du LLM (agents/reliability/guards.py)
+# Après un redémarrage, les mesures ne comptent qu'une fois l'API revenue (ou passé ce délai)
+RELIABILITY_RESTART_GRACE_SECONDS = float(os.getenv("RELIABILITY_RESTART_GRACE_SECONDS", "90"))
+RELIABILITY_WORSE_MARGIN_PCT = float(os.getenv("RELIABILITY_WORSE_MARGIN_PCT", "5"))  # "aggravé" = + de 5 points
+RELIABILITY_SATURATION_PCT = float(os.getenv("RELIABILITY_SATURATION_PCT", "90"))  # mémoire / CPU saturés
+RELIABILITY_BAD_MODEL_WINDOW_SECONDS = float(os.getenv("RELIABILITY_BAD_MODEL_WINDOW_SECONDS", "1800"))
+# Redémarrage sans effet et modèle promu depuis moins de N h : le modèle est suspect -> rollback
+RELIABILITY_SUSPECT_MODEL_HOURS = float(os.getenv("RELIABILITY_SUSPECT_MODEL_HOURS", "24"))
+# Mesures toutes hors objectif après une action : au-delà, l'action n'a pas réparé (sans attendre le LLM)
+RELIABILITY_NOT_REPAIRED_CYCLES = int(os.getenv("RELIABILITY_NOT_REPAIRED_CYCLES", "3"))
 
 COST_PER_CPU_SECOND = float(os.getenv("COST_PER_CPU_SECOND", "0.0005"))
 COST_SPOT_DISCOUNT = float(os.getenv("COST_SPOT_DISCOUNT", "0.6"))
@@ -84,3 +94,50 @@ DEFAULT_CPU_SECONDS_PER_MONTH_OF_DATA = float(
 COST_IDLE_MINUTES = float(os.getenv("COST_IDLE_MINUTES", "30.0"))
 COST_SIZE_HEADROOM = float(os.getenv("COST_SIZE_HEADROOM", "0.3"))
 COST_HOURS_PER_MONTH = float(os.getenv("COST_HOURS_PER_MONTH", "730.0"))
+COST_SERVER_SIZE = os.getenv("COST_SERVER_SIZE", "S")                  # taille actuelle du serveur de l'API (S, M, L)
+COST_TICK_SECONDS = float(os.getenv("COST_TICK_SECONDS", "60"))        # boucle de fond : coût servi, inactivité, taille
+# Détection de pic de coût (règle déterministe, aucune action automatique : une alerte)
+COST_SPIKE_FACTOR = float(os.getenv("COST_SPIKE_FACTOR", "3.0"))          # pic = N fois la médiane habituelle
+COST_SPIKE_WINDOW = int(os.getenv("COST_SPIKE_WINDOW", "10"))             # nombre de mesures passées comparées
+COST_SPIKE_MIN_HISTORY = int(os.getenv("COST_SPIKE_MIN_HISTORY", "3"))    # en dessous, pas assez d'historique pour juger
+COST_SPIKE_MIN_VCPUS = float(os.getenv("COST_SPIKE_MIN_VCPUS", "0.1"))    # API servie : en dessous, bruit de fond ignoré
+COST_LLM_MODEL = os.getenv("COST_LLM_MODEL", "llama3.2:3b")             # explique le rapport de coûts (ne décide rien)
+COST_LLM_TIMEOUT_SECONDS = float(os.getenv("COST_LLM_TIMEOUT_SECONDS", "120"))
+# Commandes en langage naturel (canal #mlops-agents de l'interface) : le LLM comprend, le code vérifie
+CHAT_LLM_MODEL = os.getenv("CHAT_LLM_MODEL", "llama3.2:3b")
+CHAT_LLM_TIMEOUT_SECONDS = float(os.getenv("CHAT_LLM_TIMEOUT_SECONDS", "90"))
+CHAT_MAX_MONTHS = int(os.getenv("CHAT_MAX_MONTHS", "6"))  # période la plus longue acceptée en chat
+
+
+# --- LLM (Ollama, 100 % local) : ils prennent les décisions de l'agent Fiabilité (encadrées par guards.py) ---
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+LLM_AGENT_MODEL = os.getenv("LLM_AGENT_MODEL", "qwen2.5:3b")    # décide (appelé à chaque cycle)
+LLM_JUDGE_MODEL = os.getenv("LLM_JUDGE_MODEL", "llama3.2:3b")   # juge : autre famille de modèle
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))  # 1er chargement d'un modèle : ~30-45 s
+LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "4096"))
+LLM_KEEP_ALIVE = os.getenv("LLM_KEEP_ALIVE", "30m")             # garder le modèle en mémoire GPU
+# LLM qui ne répond plus : nouvel essai après 1 min, puis 2, 4... (max 5 min) au lieu de toutes les 15 s,
+# sinon les requêtes abandonnées s'empilent dans Ollama qui ne rattrape jamais son retard (vu en direct)
+LLM_RETRY_MIN_SECONDS = float(os.getenv("LLM_RETRY_MIN_SECONDS", "60"))
+LLM_RETRY_MAX_SECONDS = float(os.getenv("LLM_RETRY_MAX_SECONDS", "300"))
+LLM_MAX_PROPOSALS = int(os.getenv("LLM_MAX_PROPOSALS", "2"))    # propositions d'action max par cycle (si refus du juge)
+LLM_THINK = os.getenv("LLM_THINK", "off")    # "off" : coupe le mode réflexion (qwen3...) trop lent ; "on" ; "auto" : défaut du modèle
+LLM_TREND_CYCLES = int(os.getenv("LLM_TREND_CYCLES", "8"))      # mesures passées montrées au LLM
+JUDGE_MIN_SCORE = int(os.getenv("JUDGE_MIN_SCORE", "6"))        # note minimale (sur 10) pour approuver
+
+# --- Orchestrateur ---
+ORCHESTRATOR_WEB_PORT = int(os.getenv("ORCHESTRATOR_WEB_PORT", "8080"))  # page web des notifications
+RETRAIN_TIMEOUT_MINUTES = float(os.getenv("RETRAIN_TIMEOUT_MINUTES", "30"))  # sans réponse de Retrain, on considère qu'il a échoué
+INCIDENT_HOLD_MINUTES = float(os.getenv("INCIDENT_HOLD_MINUTES", "30"))  # incident Fiabilité sans clôture : on ne bloque plus le retrain après ce délai
+UI_PUBLIC_URL = os.getenv("UI_PUBLIC_URL", "http://localhost:8080")  # interface vue depuis le PC (liens des boutons Discord)
+GRAFANA_PUBLIC_URL = os.getenv("GRAFANA_PUBLIC_URL", "http://localhost:3000")  # bouton « Tableau de bord »
+
+# --- Discord (facultatif) : un bot relaie les messages de l'interface et porte les boutons ---
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")                  # vide = Discord désactivé
+DISCORD_ALERTS_CHANNEL_ID = os.getenv("DISCORD_ALERTS_CHANNEL_ID", "")  # #mlops-alertes : incidents, données corrompues, budget
+DISCORD_AGENTS_CHANNEL_ID = os.getenv("DISCORD_AGENTS_CHANNEL_ID", "")  # #mlops-agents : réentraînements, promotions, questions
+DISCORD_ALERT_MENTION = os.getenv("DISCORD_ALERT_MENTION", "")          # ex. @here ou <@&id_du_rôle>, en tête des alertes et questions
+DISCORD_THREAD_HOURS = float(os.getenv("DISCORD_THREAD_HOURS", "12"))   # un parcours complète son message Discord pendant ce délai
+
+# --- Agent Qualité en service ---
+QUALITY_CHECK_MINUTES = float(os.getenv("QUALITY_CHECK_MINUTES", "30"))  # intervalle entre deux contrôles

@@ -9,8 +9,10 @@ pydantic==2.14.0
 SQLAlchemy==2.1.4
 psycopg[binary]==3.3.6
 PyYAML==6.0.3
+langgraph==1.2.19
+discord.py==2.7.1
 requests==2.34.2
-
+optuna==5.0.0
 evidently==0.7.23
 
 prometheus_client==0.26.0

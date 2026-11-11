@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Agent {{ info.name }}{% endblock %}
+{% block content %}
+<h1><span class="dot {{ info.color }}" style="width:12px;height:12px"></span> Agent {{ info.name }}</h1>
+<p class="sub">{{ info.role }}</p>
+
+<div id="agent-kpis" data-live class="grid kpis">
+  <div class="kpi"><div class="label">Conteneur <code>{{ info.service }}</code></div>
+    <div class="value">{% if container %}{{ m.container_badge(container) }}{% else %}<span class="muted">inconnu</span>{% endif %}</div>
+    <div class="hint">{% if container %}{{ container.restarts }} redémarrage(s) · démarré <span data-ts="{{ container.started_at }}" data-rel></span>{% else %}socket Docker non monté{% endif %}</div></div>
+  <div class="kpi"><div class="label">Actions sur 24 h</div><div class="value">{{ activity.count_24h or 0 }}</div>
+    <div class="hint">{% if activity.last %}dernière <span data-ts="{{ activity.last.ts|iso }}" data-rel></span>{% else %}aucune{% endif %}</div></div>
+  <div class="kpi"><div class="label">Écoute</div>
+    <div class="hint" style="margin-top:6px">{% for e in info.listens %}<span class="evt">{{ e }}</span> {% else %}rien : il mesure lui-même{% endfor %}</div></div>
+  <div class="kpi"><div class="label">Publie</div>
+    <div class="hint" style="margin-top:6px">{% for e in info.publishes %}<span class="evt">{{ e }}</span> {% endfor %}</div></div>
+</div>
+
+<div class="tabs">
+  <a href="/agents/{{ info.key }}" class="{{ 'on' if not action }}">Toutes les actions</a>
+  {% for a in actions %}<a href="/agents/{{ info.key }}?action={{ a }}" class="{{ 'on' if action == a }}">{{ a }}</a>{% endfor %}
+</div>
+<div class="panel"><div id="agent-log" data-live class="scroll">{{ m.log_table(rows, show_agent=False) }}</div></div>
+{% endblock %}

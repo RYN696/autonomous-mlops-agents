@@ -19,6 +19,10 @@ def build_event(validation, drift_score: float, num_drifted_columns: int,
         "invalid_rows": validation.invalid_rows,
         "invalid_share": validation.invalid_share,
         "invalid_reasons": validation.reasons,
+        "impossible_share": validation.impossible_share,
+        # sous le seuil critique mais avec des valeurs impossibles : données à faire vérifier par un humain
+        "suspect": (not validation.is_critical
+                    and validation.impossible_share >= config.SUSPECT_SHARE),
     }
     drifted = (drift_score >= config.DRIFT_THRESHOLD
                or prediction_drift >= config.COLUMN_DRIFT_THRESHOLD)
